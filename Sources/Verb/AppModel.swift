@@ -624,7 +624,7 @@ struct SheetWriting: Equatable {
         activeTask = Task {
             var record = initial
             let started = Date()
-            var editedSelection: String?
+            var editedSelection: String?, copiedSelection: String?
             defer { if operation == id { reset() }; reloadHistory() }
             do {
                 record.status = .processing
@@ -686,7 +686,7 @@ struct SheetWriting: Equatable {
                 if record.mode == .command {
                     setPhase(.polishing)
                     var selection = selectedText ?? ""
-                    if selection.isEmpty { selection = try await inserter.copySelection() ?? "" }
+                    if selection.isEmpty { selection = try await inserter.copySelection() ?? ""; copiedSelection = selection }
                     guard !selection.isEmpty else { try discard(record); status = "Select some text first."; outcome = .hint; return }
                     guard selection.split(whereSeparator: \.isWhitespace).count <= 1000 else { try discard(record); status = "Select at most 1,000 words for a voice edit."; outcome = .hint; return }
                     if snapshot.cleanupProvider == .local { try await writer.start() }
@@ -759,7 +759,7 @@ struct SheetWriting: Equatable {
                         sheetWriting = SheetWriting(mode: record.mode, handsFree: handsFree, text: text)
                     }
                 } else {
-                    record.delivery = snapshot.autoInsert ? try await inserter.insert(text, html: html, target: target, requireSelection: record.mode == .command) : "Ready to copy"
+                    record.delivery = snapshot.autoInsert ? try await inserter.insert(text, html: html, target: target, requireSelection: record.mode == .command, copied: copiedSelection) : "Ready to copy"
                 }
                 if cursorBack > 0, record.delivery.hasPrefix("Paste sent") { inserter.moveCursorBack(cursorBack) }
                 if record.delivery.hasPrefix("Paste sent"), let target { hotkeys.typing.wrote(cursorBack > 0 ? String(text.dropLast(cursorBack)) : text, in: target.pid) }
@@ -929,15 +929,15 @@ struct SheetWriting: Equatable {
         activeTask = Task {
             defer { reset(); reloadHistory() }
             do {
-                var selection = target.selection
-                if selection.isEmpty { selection = try await inserter.copySelection() ?? "" }
+                var selection = target.selection, copied: String?
+                if selection.isEmpty { selection = try await inserter.copySelection() ?? ""; copied = selection }
                 guard !selection.isEmpty else { status = "Select some text first."; outcome = .hint; return }
                 guard selection.split(whereSeparator: \.isWhitespace).count <= 1000 else { status = "Select at most 1,000 words."; outcome = .hint; return }
                 if snapshot.cleanupProvider == .local { try await writer.start() }
                 let output = try await client.edit(text: selection, style: .natural, vocabulary: library.vocabulary, settings: snapshot, key: Secrets.read("cleanup"), instruction: transform.instruction, selection: selection)
                 try Task.checkCancellation()
                 latestOriginal = selection; latestText = output
-                let delivery = snapshot.autoInsert ? try await inserter.insert(output, target: target, requireSelection: true) : "Ready to copy"
+                let delivery = snapshot.autoInsert ? try await inserter.insert(output, target: target, requireSelection: true, copied: copied) : "Ready to copy"
                 status = delivery; outcome = Outcome.of(delivery: delivery)
                 if snapshot.retention != .none { try store.save(DictationRecord(id: id, rawText: selection, text: output, appName: target.appName, bundleID: target.bundleID, engine: snapshot.cleanupModel, mode: .command, status: .completed, delivery: delivery)) }
             } catch {

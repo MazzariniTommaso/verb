@@ -150,6 +150,28 @@ private final class PasteSupply: NSObject, NSPasteboardItemDataProvider {
         Self.write(previousClipboard, to: NSPasteboard.general); pastedChangeCount = nil; previousClipboard = []
         supply = nil; restoreSoon = false
     }
+    /// Whether a modifier key is physically down. The paste and the copy wait until none is, as a
+    /// held ⌃ or ⌥ would change the shortcut. It asks for the keys themselves: the modifier flags
+    /// also keep the ⌘ of a shortcut Verb just posted, until a real key clears them.
+    static var modifierKeysDown: Bool {
+        // ⌘, ⇧, ⌥ and ⌃ on either side, and fn; Caps Lock locks rather than holds.
+        [54, 55, 56, 58, 59, 60, 61, 62, 63].contains { CGEventSource.keyState(.hidSystemState, key: CGKeyCode($0)) }
+    }
+    /// ⌘ and a key, as the app in front gets them from the keyboard, then ⌘ let go, so the Mac is
+    /// never left believing ⌘ is still held.
+    private static func postCommand(_ keyCode: CGKeyCode) -> Bool {
+        guard let source = CGEventSource(stateID: .privateState),
+              let down = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true),
+              let up = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false),
+              let release = CGEvent(keyboardEventSource: source, virtualKey: 55, keyDown: false) else { return false }
+        down.flags = .maskCommand; up.flags = .maskCommand
+        release.type = .flagsChanged; release.flags = []
+        for event in [down, up, release] {
+            event.setIntegerValueField(.eventSourceUserData, value: TypingContext.marker)
+            event.post(tap: .cghidEventTap)
+        }
+        return true
+    }
     /// Every item on the clipboard, with every kind of data it holds.
     private static func snapshot(_ board: NSPasteboard) -> [[NSPasteboard.PasteboardType: Data]] {
         (board.pasteboardItems ?? []).map { item in Dictionary(uniqueKeysWithValues: item.types.compactMap { type in item.data(forType: type).map { (type, $0) } }) }
@@ -176,7 +198,8 @@ private final class PasteSupply: NSObject, NSPasteboardItemDataProvider {
     static let keptMoved = "Destination changed · kept as your last dictation"
 
     /// `html` carries a formatted snippet's formatting; apps that don't read it get `text`.
-    func insert(_ text: String, html: String? = nil, target: TextTarget?, requireSelection: Bool = false) async throws -> String {
+    /// `copied` is the selection read by copying it, for an app that hides it from Accessibility.
+    func insert(_ text: String, html: String? = nil, target: TextTarget?, requireSelection: Bool = false, copied: String? = nil) async throws -> String {
         guard let target else { return Self.keptNoField }
         guard !target.secure else { return "Sensitive field · ready to copy" }
         guard AXIsProcessTrusted() else { return "Accessibility is off · kept as your last dictation" }
@@ -187,24 +210,26 @@ private final class PasteSupply: NSObject, NSPasteboardItemDataProvider {
         // Paste must run after the dictation/paste-last shortcut has been released.
         // Otherwise a physical Control/Option/Fn modifier can alter Command-V. Someone holding the
         // keys to dictate again gets the paste as soon as they let go.
-        let modifiers: CGEventFlags = [.maskCommand, .maskControl, .maskAlternate, .maskShift, .maskSecondaryFn]
         let deadline = Date().addingTimeInterval(8)
-        while !CGEventSource.flagsState(.hidSystemState).intersection(modifiers).isEmpty {
+        while Self.modifierKeysDown {
             try Task.checkCancellation()
             guard Date() < deadline else { return "Keys still held · kept as your last dictation" }
             try await Task.sleep(nanoseconds: 20_000_000)
         }
         try Task.checkCancellation()
         guard target.stillMatches(requireSelection: requireSelection) else { return Self.keptMoved }
-        guard let source = CGEventSource(stateID: .privateState), let down = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true), let up = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) else { return "Could not send paste · kept as your last dictation" }
+        // Accessibility can't tell whether a hidden selection moved: it is copied again, and the text
+        // goes in only where that selection still is.
+        if requireSelection, let copied {
+            guard try await copySelection() == copied else { return Self.keptMoved }
+            guard target.stillMatches(requireSelection: requireSelection) else { return Self.keptMoved }
+        }
 
         // AXSelectedText can report success without updating web/Electron editors
         // or firing their input events. Use the application's normal paste path.
         guard stage(text, html: html), let changeCount = pastedChangeCount else { return "Clipboard unavailable · kept as your last dictation" }
         guard target.stillMatches(requireSelection: requireSelection) else { restoreClipboard(); return Self.keptMoved }
-        down.flags = .maskCommand; up.flags = .maskCommand
-        down.setIntegerValueField(.eventSourceUserData, value: TypingContext.marker); up.setIntegerValueField(.eventSourceUserData, value: TypingContext.marker)
-        down.post(tap: .cghidEventTap); up.post(tap: .cghidEventTap)
+        guard Self.postCommand(9) else { restoreClipboard(); return "Could not send paste · kept as your last dictation" }
         // What you had copied comes back as soon as the app has read the paste (see
         // pasteWasRead), or after a second and a half if it never does; unless something new was
         // copied in the meantime.
@@ -222,24 +247,20 @@ private final class PasteSupply: NSObject, NSPasteboardItemDataProvider {
     /// keys to be let go, as a held ⌃ or ⌥ would change ⌘C, and gives the clipboard its
     /// contents back straight after.
     func copySelection() async throws -> String? {
-        let modifiers: CGEventFlags = [.maskCommand, .maskControl, .maskAlternate, .maskShift, .maskSecondaryFn]
         let deadline = Date().addingTimeInterval(1.5)
-        while !CGEventSource.flagsState(.hidSystemState).intersection(modifiers).isEmpty {
+        while Self.modifierKeysDown {
             try Task.checkCancellation()
             guard Date() < deadline else { return nil }
             try await Task.sleep(nanoseconds: 20_000_000)
         }
-        guard AXIsProcessTrusted(), let source = CGEventSource(stateID: .privateState),
-              let down = CGEvent(keyboardEventSource: source, virtualKey: 8, keyDown: true), let up = CGEvent(keyboardEventSource: source, virtualKey: 8, keyDown: false) else { return nil }
+        guard AXIsProcessTrusted() else { return nil }
         let board = NSPasteboard.general
         // While the last paste is still on the clipboard, what you had copied is the one saved before it.
         let pending = pastedChangeCount == board.changeCount
         let saved = pending ? previousClipboard : Self.snapshot(board)
         if pending { pastedChangeCount = nil; previousClipboard = []; supply = nil; restoreSoon = false }
         let before = board.changeCount
-        down.flags = .maskCommand; up.flags = .maskCommand
-        down.setIntegerValueField(.eventSourceUserData, value: TypingContext.marker); up.setIntegerValueField(.eventSourceUserData, value: TypingContext.marker)
-        down.post(tap: .cghidEventTap); up.post(tap: .cghidEventTap)
+        guard Self.postCommand(8) else { if pending { Self.write(saved, to: board) }; return nil }
         // The app copies in its own time; half a second is plenty. Nothing copied means nothing selected.
         var copied: String?
         for _ in 0..<25 {

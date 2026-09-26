@@ -67,6 +67,7 @@ osascript -e 'tell application id "app.verb.dictation" to quit'   # before rebui
 - **Checks can't read SwiftUI's accessibility tree.** It is only built when an assistive app is running. Assert on model state or on small static hooks, the way `TourLayer.reached` and `WelcomeView.ticked` do, not on on-screen text.
 - **Snapshot windows are off screen, so SwiftUI animations don't advance there.** Anything driven by time needs a frozen state for renders (`LevelMeter.preview`, `DemoVoice.frozen`). Otherwise the capture catches the start of an animation.
 - **Renders add hairlines at the ends of the small overlay capsule**, an artefact of the capture method. The screen doesn't show them.
+- **Verb's own shortcuts linger in the modifier flags.** After a posted ⌘C or ⌘V, `CGEventSource.flagsState` can report ⌘ held until a real key clears it. Ask whether the user holds a key with `TextInserter.modifierKeysDown`, which reads the keys themselves, and post shortcuts through `postCommand`, which releases ⌘.
 - **Accessibility calls into Verb's own process work.** The notepad and the practice sheet rely on them: a dictation goes straight to the focused `NoteEditing` view instead of through `⌘V`.
 - **`swift test` runs both test bundles.** Engine tests use fixtures and need no models or network.
 - **`scripts/build.sh` keeps bundled weights across rebuilds** and copies `Resources/Licenses` fresh each time. Weights and recordings never go into the repository.
