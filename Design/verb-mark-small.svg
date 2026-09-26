@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 17 100 75" width="400" height="300">
+  <title>Verb, small optical size</title>
+  <!-- For 24 pt and below. Same points as MarkGeometry.small in Sources/Verb/VerbMark.swift. -->
+  <path fill="#B43B27" d="M2 20 C 18 23, 39 53, 50 90 C 61 53, 82 23, 98 20 C 82 23, 63 40, 52 58 C 42 40, 24 23, 2 20 Z"/>
+</svg>

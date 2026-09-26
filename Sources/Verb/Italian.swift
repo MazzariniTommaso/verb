@@ -1,0 +1,228 @@
+import Foundation
+
+/// Italian for the messages that the engine, the core library and the app model write in
+/// English. Exact messages come first; messages with a variable part use a pattern.
+/// Anything not listed is shown in English rather than guessed.
+enum Italian {
+    static func translate(_ english: String) -> String {
+        if let exact = exact[english] { return exact }
+        // A closing sentence added to a message, such as the note that the recording was kept.
+        for (suffix, italian) in suffixes where english.hasSuffix(suffix) && english.count > suffix.count { return translate(String(english.dropLast(suffix.count))) + italian }
+        for (regex, template) in compiled {
+            let range = NSRange(english.startIndex..., in: english)
+            guard let match = regex.firstMatch(in: english, range: range) else { continue }
+            var result = template
+            for index in stride(from: match.numberOfRanges - 1, through: 1, by: -1) {
+                guard let part = Range(match.range(at: index), in: english) else { continue }
+                let value = String(english[part])
+                // A nested message, such as the reason cleanup failed, is translated too.
+                result = result.replacingOccurrences(of: "$\(index)", with: index == match.numberOfRanges - 1 && template.hasSuffix("$\(index)") ? translate(value) : value)
+            }
+            return result
+        }
+        return english
+    }
+
+    private static let suffixes = [(" The recording is saved. Retry it from History.", " La registrazione è salvata. Riprova dalla Cronologia.")]
+    private static let compiled: [(NSRegularExpression, String)] = patterns.compactMap { pattern, template in
+        (try? NSRegularExpression(pattern: pattern, options: [.dotMatchesLineSeparators])).map { ($0, template) }
+    }
+    private static let patterns: [(String, String)] = [
+        (#"^Paste sent to (.+)$"#, "Incollato in $1"),
+        (#"^AI cleanup unavailable\. Kept your original transcript\. (.*)$"#, "Rifinitura AI non disponibile. La trascrizione originale è rimasta. $1"),
+        (#"^Could not read (.+?)\. The original file has been preserved: (.*)$"#, "Impossibile leggere $1. Il file originale è stato conservato: $2"),
+        (#"^Local history could not be saved: (.*)$"#, "Impossibile salvare la cronologia locale: $1"),
+        (#"^The model server returned HTTP (\d+)\.$"#, "Il server del modello ha risposto HTTP $1."),
+        (#"^The CLI closed before completing its response\. Check that it is current and signed in\. ?(.*)$"#, "La CLI si è chiusa prima di completare la risposta. Controlla che sia aggiornata e che tu abbia fatto l’accesso. $1"),
+        (#"^The CLI failed \((-?\d+)\)\. Check its login, model access and usage limits\. ?(.*)$"#, "La CLI non è riuscita ($1). Controlla l’accesso, i modelli disponibili e i limiti d’uso. $2"),
+        (#"^Claude could not complete cleanup\. Check model access or your subscription limit\. ?(.*)$"#, "Claude non ha completato la rifinitura. Controlla l’accesso ai modelli o il limite del tuo abbonamento. $1"),
+        (#"^CLI: Request failed$"#, "CLI: richiesta non riuscita"),
+        (#"^Copilot: Edit failed$"#, "Copilot: modifica non riuscita"),
+        (#"^Claude subscription · (.+)$"#, "Abbonamento Claude · $1"),
+        (#"^(.+) \(default\)$"#, "$1 (predefinito)"),
+        (#"^Unexpected success for HTTP (\d+)$"#, "Risposta HTTP $1 inattesa"),
+        (#"^(.+) CLI is not installed or its executable moved\.$"#, "La CLI di $1 non è installata oppure il suo eseguibile è stato spostato."),
+        (#"^(.+) CLI not found\. Install it or choose its executable, sign in, then refresh\.$"#, "CLI di $1 non trovata. Installala o scegli il suo eseguibile, accedi, poi aggiorna."),
+        (#"^(.+) returned no supported models\. Update the CLI or check model access in your account\. No static list has been substituted\.$"#, "$1 non ha restituito modelli supportati. Aggiorna la CLI o controlla l'accesso ai modelli nel tuo account. Nessun elenco fisso è stato usato al suo posto."),
+        (#"^(.+) is already used by another app\. Choose another shortcut in Settings\.$"#, "$1 è già usata da un'altra app. Scegli un'altra scorciatoia nelle Impostazioni."),
+        (#"^Launch at login could not be changed: (.*)$"#, "Impossibile cambiare l'apertura al login: $1"),
+        (#"^Voice activation is paused\. (.*)$"#, "L'attivazione vocale è in pausa. $1"),
+        (#"^Checking (.+)…$"#, "Verifico $1…"),
+        (#"^Verb couldn't (record|open|listen to|start recording) the Mac's sound \(Core Audio error (-?\d+)\)\.$"#, "Verb non riesce a usare l’audio del Mac (errore Core Audio $2)."),
+        (#"^“(.+)” is in the dictionary\.$"#, "“$1” è nel dizionario."),
+        (#"^“(.+)” was already in the dictionary\.$"#, "“$1” era già nel dizionario."),
+        (#"^(.+) heard nothing\. Check the microphone in Settings\.$"#, "$1 non ha sentito nulla. Controlla il microfono nelle Impostazioni."),
+        (#"^Kept your words: the writing model changed “(.+)”\.$"#, "Tenute le tue parole: il modello di scrittura aveva cambiato “$1”."),
+        (#"^Downloading (.+)…$"#, "Scarico $1…"),
+    ]
+
+    private static let exact: [String: String] = [
+        // The clean-up check
+        "Kept your words: the writing model answered the dictation instead of tidying it.": "Tenute le tue parole: il modello di scrittura ha risposto alla dettatura invece di rifinirla.",
+        "Kept your words: the writing model changed a number.": "Tenute le tue parole: il modello di scrittura aveva cambiato un numero.",
+        "Kept your words: the writing model added or dropped a negation.": "Tenute le tue parole: il modello di scrittura aveva aggiunto o tolto una negazione.",
+        "Kept your words: the writing model changed a question.": "Tenute le tue parole: il modello di scrittura aveva cambiato una domanda.",
+        "The microphone heard nothing. Check the microphone in Settings.": "Il microfono non ha sentito nulla. Controllalo nelle Impostazioni.",
+        // Notes and meetings
+        "Written in your note": "Scritto nella nota",
+        "Written on the practice sheet": "Scritto sul foglio di prova",
+        "The meeting notes are ready.": "Le note della riunione sono pronte.",
+        "Recording the meeting. Let the others know.": "Registro la riunione: avvisa chi partecipa.",
+        "Recording your microphone only: the Mac's sound can't be recorded.": "Registro solo il tuo microfono: l’audio del Mac non si può registrare.",
+        "Meeting notes need the speech model on this Mac. Download it in Models.": "Le note delle riunioni richiedono il modello vocale su questo Mac. Scaricalo in Modelli.",
+        "Write something in the note first.": "Scrivi prima qualcosa nella nota.",
+        "Recording the Mac's sound needs macOS 14.2 or later.": "Per registrare l’audio del Mac serve macOS 14.2 o successivo.",
+        "The Mac has no sound output to record.": "Il Mac non ha un’uscita audio da registrare.",
+        "Verb couldn't read the format of the Mac's sound.": "Verb non riesce a leggere il formato dell’audio del Mac.",
+        // Import and export
+        "This file has no dictionary Verb can read. Use a CSV with the spelling in the first column, or a JSON exported by Verb.": "Questo file non contiene un dizionario leggibile. Usa un CSV con la grafia nella prima colonna, o un JSON esportato da Verb.",
+        "This file has no snippets Verb can read. Use a CSV with the phrase and the text in two columns, or a JSON exported by Verb.": "Questo file non contiene frasi pronte leggibili. Usa un CSV con la frase e il testo in due colonne, o un JSON esportato da Verb.",
+        "The file is too large to import.": "Il file è troppo grande da importare.",
+        // Status and delivery
+        "Ready when you are": "Pronto quando vuoi",
+        "No speech detected": "Nessuna voce rilevata",
+        "Recording cancelled": "Registrazione annullata",
+        "Microphone access is off": "Il microfono non è consentito",
+        "Recording failed": "Registrazione non riuscita",
+        "Couldn't paste": "Impossibile incollare",
+        "Couldn't apply the transform": "Trasformazione non riuscita",
+        "Ready to copy": "Pronto da copiare",
+        "Copied to clipboard": "Copiato negli appunti",
+        "Couldn't finish dictation": "Dettatura non completata",
+        "Processing cancelled. Retry from History.": "Elaborazione annullata. Riprova dalla Cronologia.",
+        "Cancelled": "Annullata",
+        "Cancelled · recording saved": "Annullata · registrazione salvata",
+        "Verb was closed during this dictation. Retry the saved audio.": "Verb è stato chiuso durante questa dettatura. Riprova con l’audio salvato.",
+        "This note changed in another app. Your version is saved beside it.": "Questa nota è cambiata in un’altra app. La tua versione è salvata accanto.",
+        "Allow remote processing to read your account and model list.": "Consenti l’elaborazione remota per leggere il tuo account e l’elenco dei modelli.",
+        "Sensitive field · ready to copy": "Campo protetto · pronto da copiare",
+        "No text field · kept as your last dictation": "Nessun campo di testo · salvata come ultima dettatura",
+        "Destination changed · kept as your last dictation": "La destinazione è cambiata · salvata come ultima dettatura",
+        "Accessibility is off · kept as your last dictation": "Accessibilità spenta · salvata come ultima dettatura",
+        "Keys still held · kept as your last dictation": "Tasti ancora premuti · salvata come ultima dettatura",
+        "Could not send paste · kept as your last dictation": "Impossibile incollare · salvata come ultima dettatura",
+        "Clipboard unavailable · kept as your last dictation": "Appunti non disponibili · salvata come ultima dettatura",
+        "Audio import": "Audio importato",
+        "Test cancelled.": "Test annullato.",
+        "Processing was interrupted. Retry the saved audio.": "Elaborazione interrotta. Riprova con l'audio salvato.",
+        // Downloads
+        "Starting the local writing engine…": "Avvio il motore di scrittura locale…",
+        "Writing model ready": "Modello di scrittura pronto",
+        "Getting the download ready…": "Preparo il download…",
+        "Checking the download…": "Controllo il download…",
+        "Finishing the download…": "Completo il download…",
+        "Downloading the writing model…": "Scarico il modello di scrittura…",
+        "MLX model ready offline": "Modello MLX pronto offline",
+        "Preparing MLX on the Apple GPU…": "Preparo MLX sulla GPU Apple…",
+        "Downloading…": "Download in corso…",
+        "Fast multilingual dictation · Italian and English · 2.51 GB": "Dettatura multilingue veloce · italiano e inglese · 2,51 GB",
+        "Compact multilingual model · language and vocabulary hints · 713 MB": "Modello multilingue compatto · suggerimenti di lingua e vocabolario · 713 MB",
+        // App model notices
+        "Enable Microphone for Verb in System Settings → Privacy & Security.": "Attiva il Microfono per Verb in Impostazioni di Sistema → Privacy e sicurezza.",
+        "The microphone changed. Processing the audio captured so far.": "Il microfono è cambiato. Elaboro l'audio registrato finora.",
+        "Download the speech model before your first dictation.": "Scarica il modello vocale prima della prima dettatura.",
+        "Download the speech model in Models to try the phrase.": "Scarica il modello vocale in Modelli per provare la frase.",
+        "Dictation is disabled in this sensitive field.": "La dettatura è disattivata in questo campo protetto.",
+        "Select some text first.": "Prima seleziona un testo.",
+        "Choose a writing model in Models first.": "Prima scegli un modello di scrittura in Modelli.",
+        "Select at most 1,000 words for a voice edit.": "Seleziona al massimo 1.000 parole per una modifica a voce.",
+        "For a new voice edit, select the original text and record your instruction again.": "Per una nuova modifica a voce, seleziona il testo originale e registra di nuovo l'istruzione.",
+        "Select at most 1,000 words.": "Seleziona al massimo 1.000 parole.",
+        // Engine and core errors
+        "Audio conversion was interrupted.": "La conversione dell’audio si è interrotta.",
+        "Audio storage could not keep up. Check disk space and retry with a shorter recording.": "Il salvataggio dell'audio non ha tenuto il passo. Controlla lo spazio su disco e riprova con una registrazione più breve.",
+        "Choose a downloaded local model. Cloud models are not allowed in local mode.": "Scegli un modello locale già scaricato. In modalità locale i modelli cloud non sono ammessi.",
+        "Choose a model from the provider's current list.": "Scegli un modello dall'elenco attuale del fornitore.",
+        "Choose an MLX speech model in Models.": "Scegli un modello vocale MLX in Modelli.",
+        "Claude could not return its model list.": "Claude non ha restituito l'elenco dei modelli.",
+        "Codex could not finish cleanup. Check the selected model and your account's usage limits.": "Codex non ha completato la rifinitura. Controlla il modello scelto e i limiti d'uso del tuo account.",
+        "Codex did not return a complete edited transcript.": "Codex non ha restituito una trascrizione completa.",
+        "Copilot could not complete this edit. Check your account, model access and credits.": "Copilot non ha completato la modifica. Controlla l'account, l'accesso ai modelli e i crediti.",
+        "Copilot could not start a text-only session.": "Copilot non ha avviato una sessione di solo testo.",
+        "Copilot requested a tool. Verb only accepts text-only cleanup.": "Copilot ha chiesto di usare uno strumento. Verb accetta solo rifiniture di testo.",
+        "Could not convert the recording.": "Impossibile convertire la registrazione.",
+        "Could not download the writing model.": "Impossibile scaricare il modello di scrittura.",
+        "Could not open local history.": "Impossibile aprire la cronologia locale.",
+        "Could not prepare 16 kHz audio for MLX.": "Impossibile preparare l'audio a 16 kHz per MLX.",
+        "Could not prepare a history update.": "Impossibile preparare l'aggiornamento della cronologia.",
+        "Could not prepare audio for upload.": "Impossibile preparare l'audio per l'invio.",
+        "Could not read history.": "Impossibile leggere la cronologia.",
+        "Could not read the recording.": "Impossibile leggere la registrazione.",
+        "Could not select that microphone.": "Impossibile selezionare quel microfono.",
+        "Cursor did not return a complete edit. Check the CLI version, login and usage limits.": "Cursor non ha restituito una modifica completa. Controlla la versione della CLI, l'accesso e i limiti d'uso.",
+        "Download the selected MLX speech model in Models to enable offline dictation.": "Scarica il modello vocale MLX scelto in Modelli per dettare offline.",
+        "Download was interrupted. Retry to resume it.": "Il download si è interrotto. Riprova per riprenderlo.",
+        "Enable a writing model in Models to use voice editing.": "Attiva un modello di scrittura in Modelli per usare la modifica a voce.",
+        "Enter a complete endpoint URL without embedded credentials.": "Inserisci l'URL completo dell'endpoint, senza credenziali al suo interno.",
+        "Enter a word or phrase, not just punctuation.": "Inserisci una parola o una frase, non solo punteggiatura.",
+        "Enter between 1 and 12,000 characters of expansion text.": "Inserisci da 1 a 12.000 caratteri di testo.",
+        "Enter the writing model's ID in Models.": "Inserisci l'ID del modello di scrittura in Modelli.",
+        "Gemini did not complete the edit. Check login, model access and quota.": "Gemini non ha completato la modifica. Controlla l'accesso, i modelli disponibili e la quota.",
+        "History is unreadable. Your database has been preserved.": "La cronologia non è leggibile. Il database è stato conservato.",
+        "History write failed. Check available disk space.": "Scrittura della cronologia non riuscita. Controlla lo spazio su disco.",
+        "Import a recording up to 20 minutes long.": "Importa una registrazione di al massimo 20 minuti.",
+        "Import a recording up to 4 hours long.": "Importa una registrazione di al massimo 4 ore.",
+        "Use a recording up to 4 hours long.": "Usa una registrazione di al massimo 4 ore.",
+        "Import one recording at a time.": "Importa una registrazione alla volta.",
+        "Install Ollama to run a local writing model, or choose a hosted model.": "Installa Ollama per usare un modello di scrittura locale, oppure scegli un modello ospitato.",
+        "Invalid CLI protocol header.": "Intestazione del protocollo CLI non valida.",
+        "Keychain could not remove this key.": "Il Portachiavi non ha potuto rimuovere questa chiave.",
+        "Keychain could not save this key.": "Il Portachiavi non ha potuto salvare questa chiave.",
+        "Keychain could not update this key.": "Il Portachiavi non ha potuto aggiornare questa chiave.",
+        "Model or endpoint not found. Check the model name, or download it first.": "Modello o endpoint non trovato. Controlla il nome del modello o scaricalo prima.",
+        "No microphone is available.": "Nessun microfono disponibile.",
+        "No words were recognized.": "Nessuna parola riconosciuta.",
+        "Remote processing is off. Enable it before sending text to a subscription CLI.": "L'elaborazione remota è disattivata. Attivala prima di inviare testo a una CLI in abbonamento.",
+        "Remote processing is off. Enable it in Privacy before sending audio or text to this server.": "L'elaborazione remota è disattivata. Attivala in Privacy prima di inviare audio o testo a questo server.",
+        "Remote servers require HTTPS. HTTP is allowed only on this Mac.": "I server remoti richiedono HTTPS. HTTP è ammesso solo su questo Mac.",
+        "Sign in to Claude Code with your Claude subscription. API-key or third-party billing is not used by this connection.": "Accedi a Claude Code con il tuo abbonamento Claude. Questa connessione non usa chiavi API né fatturazione di terzi.",
+        "Sign in to GitHub Copilot in its CLI, then refresh.": "Accedi a GitHub Copilot dalla sua CLI, poi aggiorna.",
+        "Sign in with ChatGPT using codex login. API-key, token and external-provider billing are blocked in subscription mode.": "Accedi con ChatGPT usando codex login. In modalità abbonamento chiavi API, token e fatturazione esterna sono bloccati.",
+        "Speech model download failed its integrity check. Retry the download.": "Il modello vocale scaricato non ha superato il controllo di integrità. Riprova il download.",
+        "That phrase is already in your library.": "Queste parole attivano già una frase pronta.",
+        "The CLI returned an unsupported response. Update it and refresh the connection.": "La CLI ha dato una risposta non supportata. Aggiornala e ricollegati.",
+        "The CLI returned too many catalog pages.": "La CLI ha restituito troppe pagine di catalogo.",
+        "The CLI returned too much output. Your original transcript is safe.": "La CLI ha restituito troppo testo. La trascrizione originale è al sicuro.",
+        "The CLI took too long. The original transcript is safe. Check its login or usage limit and retry.": "La CLI ci ha messo troppo. La trascrizione originale è al sicuro. Controlla l'accesso e i limiti d'uso, poi riprova.",
+        "The MLX speech model returned incomplete text. Retry with another model.": "Il modello vocale MLX ha restituito un testo incompleto. Riprova con un altro modello.",
+        "The library file is too large.": "Il file della libreria è troppo grande.",
+        "The local writing engine did not start. Check Ollama is installed correctly.": "Il motore di scrittura locale non si è avviato. Controlla che Ollama sia installato correttamente.",
+        "The local writing engine is still starting. Try again in a moment.": "Il motore di scrittura locale si sta ancora avviando. Riprova tra un momento.",
+        "The local writing engine stopped unexpectedly.": "Il motore di scrittura locale si è fermato all'improvviso.",
+        "The model response was unexpectedly large.": "La risposta del modello è insolitamente grande.",
+        "The model server returned an invalid response.": "Il server del modello ha dato una risposta non valida.",
+        "The provider's usage limit was reached. Retry later or switch to local processing.": "Hai raggiunto il limite d'uso del fornitore. Riprova più tardi o passa all'elaborazione locale.",
+        "The recording contains invalid audio samples.": "La registrazione contiene campioni audio non validi.",
+        "The recording is larger than this provider accepts. Use the on-device engine.": "La registrazione è più grande di quanto accetti questo fornitore. Usa il motore sul Mac.",
+        "The recording is no longer available.": "La registrazione non è più disponibile.",
+        "The selected microphone is disconnected. Choose another input in Settings.": "Il microfono scelto è scollegato. Scegline un altro nelle Impostazioni.",
+        "The server rejected the API key. Check the key in Models.": "Il server ha rifiutato la chiave API. Controllala in Modelli.",
+        "The writing model altered a snippet. Kept the original wording and your saved expansion.": "Il modello di scrittura ha modificato una frase pronta. Restano il testo originale e la tua frase pronta.",
+        "The writing model reached its output limit. Keeping your original text.": "Il modello di scrittura ha raggiunto il limite di testo. Tengo il testo originale.",
+        "The writing model returned an unexpected response. Your original transcript is safe.": "Il modello di scrittura ha dato una risposta inattesa. La trascrizione originale è al sicuro.",
+        "The writing model returned empty text. Your original transcript is safe.": "Il modello di scrittura ha restituito un testo vuoto. La trascrizione originale è al sicuro.",
+        "The writing model returned incomplete text. Keeping your original text.": "Il modello di scrittura ha restituito un testo incompleto. Tengo il testo originale.",
+        "This Gemini model is no longer available. Refresh the model list.": "Questo modello Gemini non è più disponibile. Aggiorna l'elenco dei modelli.",
+        "This microphone's audio format is unsupported.": "Il formato audio di questo microfono non è supportato.",
+        "This recording contains no audio.": "Questa registrazione non contiene audio.",
+        "This recording exceeds the hosted upload limit. Retry with the on-device engine.": "Questa registrazione supera il limite di invio del server. Riprova con il motore sul Mac.",
+        "Unexpected chat response.": "Risposta della chat inattesa.",
+        "Unexpected transcription response.": "Risposta di trascrizione inattesa.",
+        "Unknown command.": "Comando sconosciuto.",
+        "Use a phrase shorter than 120 characters.": "Usa una frase più corta di 120 caratteri.",
+        "Use agent login to connect your Cursor subscription, then refresh. Verb could not verify a subscription login.": "Usa agent login per collegare il tuo abbonamento Cursor, poi aggiorna. Verb non ha potuto verificare l'accesso in abbonamento.",
+        "Verb can't read this file as audio. Try an m4a, mp3, wav or aiff recording.": "Verb non riesce a leggere questo file come audio. Prova con una registrazione m4a, mp3, wav o aiff.",
+        // Subscription accounts
+        "ChatGPT subscription": "Abbonamento ChatGPT",
+        "GitHub Copilot login": "Accesso a GitHub Copilot",
+        "Cursor CLI login": "Accesso alla CLI di Cursor",
+        "Gemini CLI · Google login": "Gemini CLI · accesso Google",
+        "Saved CLI login": "Accesso salvato della CLI",
+        // Subscription billing notes
+        "Uses the Claude Code subscription login. Print-mode requests consume your plan's limits; any enabled extra usage is governed by Anthropic.": "Usa l'accesso in abbonamento di Claude Code. Le richieste consumano i limiti del tuo piano; l'eventuale uso extra attivato è regolato da Anthropic.",
+        "Uses the CLI's ChatGPT login. Requests consume Codex plan limits; additional credits follow your account settings. API-key login is blocked here.": "Usa l'accesso ChatGPT della CLI. Le richieste consumano i limiti del piano Codex; i crediti aggiuntivi seguono le impostazioni del tuo account. L'accesso con chiave API qui è bloccato.",
+        "Uses Cursor's CLI login. Model requests can consume included usage or enabled on-demand usage. A Cursor subscription does not make every model unlimited.": "Usa l'accesso della CLI di Cursor. Le richieste possono consumare l'uso incluso o quello a consumo, se attivo. Un abbonamento Cursor non rende illimitato ogni modello.",
+        "Uses Google login in Gemini CLI. Model access and quotas depend on the signed-in account and plan. API-key and Vertex routes are disabled here.": "Usa l'accesso Google di Gemini CLI. Modelli e quote dipendono dall'account e dal piano. Qui le chiavi API e Vertex sono disattivati.",
+        "Uses GitHub Copilot's saved login. Requests can consume your plan's AI credits; additional spending follows your GitHub settings.": "Usa l'accesso salvato di GitHub Copilot. Le richieste possono consumare i crediti AI del tuo piano; la spesa aggiuntiva segue le impostazioni di GitHub.",
+    ]
+}

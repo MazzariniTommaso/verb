@@ -1,0 +1,4 @@
+/* Mostrato da macOS quando Verb chiede per la prima volta il microfono. */
+"NSMicrophoneUsageDescription" = "Verb usa il microfono mentre detti o registri una riunione e, se lo attivi, per sentire “Ehi Verb”. La voce resta sul tuo Mac, a meno che tu non scelga un fornitore esterno.";
+/* Mostrato da macOS quando Verb registra per la prima volta l’audio del Mac, per una riunione. */
+"NSAudioCaptureUsageDescription" = "Verb registra ciò che il Mac riproduce, gli altri in una chiamata, solo mentre registri una riunione. La registrazione resta sul tuo Mac, dove vengono scritte le note della riunione.";

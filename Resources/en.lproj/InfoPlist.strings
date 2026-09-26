@@ -1,0 +1,4 @@
+/* Shown by macOS when Verb first asks for the microphone. */
+"NSMicrophoneUsageDescription" = "Verb uses the microphone while you dictate or record a meeting and, if you turn it on, to listen for “Hey Verb”. Speech stays on your Mac unless you choose a hosted provider.";
+/* Shown by macOS when Verb first records the Mac's sound, for a meeting. */
+"NSAudioCaptureUsageDescription" = "Verb records what your Mac plays, the others in a call, only while you record a meeting. The recording stays on your Mac, where the meeting notes are written.";

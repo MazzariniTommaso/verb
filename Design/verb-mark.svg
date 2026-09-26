@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 17 100 75" width="400" height="300">
+  <title>Verb</title>
+  <!-- The V-swallow, display outline. Same points as MarkGeometry.display in Sources/Verb/VerbMark.swift. -->
+  <path fill="#B43B27" d="M2 21 C 17 25, 39 55, 50 88 C 61 55, 83 25, 98 21 C 81 26.5, 61 45.5, 51.2 61 C 42 42, 23 25, 2 21 Z"/>
+</svg>
