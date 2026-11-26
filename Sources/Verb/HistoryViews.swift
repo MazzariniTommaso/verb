@@ -24,12 +24,12 @@ struct HistoryView: View {
 
     var body: some View {
         PageScroll {
-            PageHeader(rubric: rubric, title: t("History", "Cronologia"), detail: t("Search, compare, copy or recover anything you said.", "Cerca, confronta, copia o recupera ciò che hai detto.")) {
+            PageHeader(rubric: rubric, title: t("History", "Cronologia"), detail: t("Search, compare, copy or recover anything you said. Drop an audio file here to have it written down.", "Cerca, confronta, copia o recupera ciò che hai detto. Trascina qui un file audio per trascriverlo.")) {
                 HStack(spacing: Space.sm) {
                     Button { model.importAudio() } label: { Label(t("Import audio…", "Importa audio…"), systemImage: "square.and.arrow.down") }
                         .buttonStyle(VerbButtonStyle(kind: .secondary)).disabled(model.busy)
                         .help(t("Transcribe a recording like a dictation. You can also drop an audio file on this page.", "Trascrivi una registrazione come una dettatura. Puoi anche trascinare un file audio su questa pagina."))
-                    Button { model.exportHistory() } label: { Label(t("Export", "Esporta"), systemImage: "square.and.arrow.up") }
+                    Button { model.exportHistory() } label: { Label(t("Export…", "Esporta…"), systemImage: "square.and.arrow.up") }
                         .buttonStyle(VerbButtonStyle(kind: .secondary)).disabled(model.history.isEmpty)
                 }
                 // The buttons keep their words; the line under the title wraps instead.
@@ -52,7 +52,8 @@ struct HistoryView: View {
                 LazyVStack(alignment: .leading, spacing: Space.xl) {
                     ForEach(days, id: \.day) { group in
                         VStack(alignment: .leading, spacing: Space.sm) {
-                            Overline(text: dayTitle(group.day)).padding(.leading, Space.xs)
+                            // Level with the text in the rows below.
+                            Overline(text: dayTitle(group.day)).padding(.leading, Space.lg)
                             RowList {
                                 ForEach(Array(group.records.enumerated()), id: \.element.id) { index, record in
                                     if index > 0 { Hairline().padding(.horizontal, Space.lg) }
@@ -68,14 +69,25 @@ struct HistoryView: View {
         .animation(.easeOut(duration: Motion.fast), value: dropping)
         .onDrop(of: [.fileURL], delegate: AudioDrop(model: model, dropping: $dropping))
         .sheet(item: $detail) { HistoryDetail(record: $0).environmentObject(model).environment(\.lang, t).environment(\.locale, t.locale) }
+        // Sent here for one entry: it opens, whatever the search was.
+        .onAppear(perform: openFocus)
+        .onChange(of: model.historyFocus) { openFocus() }
+    }
+
+    private func openFocus() {
+        guard let id = model.historyFocus else { return }
+        model.historyFocus = nil
+        guard let record = model.history.first(where: { $0.id == id }) else { return }
+        search = ""; detail = record
     }
 
     private var rubric: String {
-        let count = t.count(model.history.count, "dictation", "dictations", "dettatura", "dettature")
+        // An empty History says how long it keeps, without a count of nothing.
+        let count = model.history.isEmpty ? "" : t.count(model.history.count, "dictation", "dictations", "dettatura", "dettature") + " · "
         switch model.settings.retention {
-        case .none: return count + " · " + t("history is off", "cronologia disattivata")
-        case .forever: return count + " · " + t("kept until you delete them", "conservate finché non le elimini")
-        default: return count + " · " + t("kept ", "conservate ") + model.settings.retention.title(t)
+        case .none: return count + t("history is off", "cronologia disattivata")
+        case .forever: return count + t("kept until you delete them", "cronologia senza scadenza")
+        default: return count + t("kept ", "cronologia di ") + model.settings.retention.title(t).lowercased(with: t.locale)
         }
     }
     private func dayTitle(_ day: Date) -> String {
@@ -110,6 +122,7 @@ private struct AudioDrop: DropDelegate {
 /// What History shows while a file is dragged over it: one sheet, ready to take the recording.
 private struct AudioDropSheet: View {
     @Environment(\.lang) private var t
+    @Environment(\.pageLayout) private var layout
     var body: some View {
         EmptyState(symbol: "waveform", title: t("Drop to transcribe", "Rilascia per trascrivere"),
                    detail: t("Verb writes it down like a dictation. Up to 4 hours on this Mac.", "Verb la trascrive come una dettatura. Fino a 4 ore su questo Mac."))
@@ -117,9 +130,9 @@ private struct AudioDropSheet: View {
             .background(Palette.surfaceRaised, in: RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous).strokeBorder(Palette.borderStrong, style: StrokeStyle(lineWidth: 1.5, dash: [6, 5])))
             // The sheet lies where the page's column does.
-            .padding(.horizontal, Space.page).padding(.vertical, Space.xxxl + Space.xs)
-            .frame(maxWidth: Sizing.contentMax + Space.page * 2)
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .frame(maxWidth: Sizing.contentMax)
+            .padding(.horizontal, layout.margin).padding(.vertical, Sizing.pageTop)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             .background(Palette.surfacePage)
             .allowsHitTesting(false)
     }
@@ -151,7 +164,7 @@ private struct HistoryRow: View {
                     .lineSpacing(leading(TypeSize.callout, Leading.ui)).lineLimit(3).multilineTextAlignment(.leading)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 HStack(spacing: Space.sm) {
-                    Image(systemName: record.mode == .command ? "pencil.line" : "text.bubble").font(.system(size: 11)).foregroundStyle(Palette.textTertiary).accessibilityHidden(true)
+                    Image(systemName: record.mode == .command ? "pencil.and.outline" : record.mode == .ask ? "questionmark.bubble" : "text.bubble").font(.system(size: 11)).foregroundStyle(Palette.textTertiary).accessibilityHidden(true)
                     Text([t.message(record.appName), record.createdAt.formatted(.dateTime.hour().minute().locale(t.locale)), t.count(record.wordCount, "word", "words", "parola", "parole"), t.duration(record.duration)].joined(separator: " · "))
                         .font(Typeface.text(TypeSize.caption)).foregroundStyle(Palette.textSecondary).lineLimit(1)
                     Spacer(minLength: Space.sm)
@@ -166,7 +179,13 @@ private struct HistoryRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(PlainPressStyle())
-        .onHover { hovering = $0 }
+        .onPointerOver { hovering = $0 }
+        // The first words, not the whole dictation; where and when, as the value.
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(record.text.isEmpty ? t("No text", "Nessun testo") : (record.text.count > 120 ? String(record.text.prefix(117)) + "…" : record.text))
+        .accessibilityValue([t.message(record.appName), t.relativeTime(record.createdAt), t.count(record.wordCount, "word", "words", "parola", "parole"),
+                             needsRecovery ? t("not finished", "non completata") : ""].filter { !$0.isEmpty }.joined(separator: ", "))
+        .accessibilityAddTraits(.isButton)
         .accessibilityHint(t("Opens the entry", "Apre la voce"))
     }
 }
@@ -175,12 +194,19 @@ struct HistoryDetail: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.dismiss) private var dismiss
     @Environment(\.lang) private var t
-    let record: DictationRecord
+    /// The entry as it was opened; `record` follows History, so a retry shows its new text here.
+    let opened: DictationRecord
+    init(record: DictationRecord) { opened = record }
+    private var record: DictationRecord { model.history.first { $0.id == opened.id } ?? opened }
     @State private var original = false
     @State private var draft = ""
     @State private var player: AVAudioPlayer?
+    @State private var playing = false
     @State private var confirmDelete = false
+    @State private var confirmRetry = false
+    @State private var confirmClose = false
     private var failed: Bool { record.status == .failed || record.status == .cancelled }
+    private var edited: Bool { !original && draft != record.text }
     private var nothingToCopy: Bool { (original ? record.rawText : draft).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     private var audio: URL? {
@@ -195,7 +221,8 @@ struct HistoryDetail: View {
                     Text(t.message(record.appName)).font(Typeface.display(TypeSize.title2)).foregroundStyle(Palette.textPrimary)
                 }
                 Spacer()
-                Button(t("Done", "Fine")) { dismiss() }.buttonStyle(VerbButtonStyle(kind: .secondary)).keyboardShortcut(.cancelAction)
+                // Escape asks before throwing an edit away.
+                Button("") { if edited { confirmClose = true } else { dismiss() } }.keyboardShortcut(.cancelAction).opacity(0).frame(width: 0, height: 0).accessibilityHidden(true)
             }
             if !(record.text.isEmpty && record.rawText.isEmpty) {
                 Segmented(title: t("Version", "Versione"), values: [false, true], selection: $original) { $0 ? t("Original transcript", "Trascrizione originale") : t("Final text", "Testo finale") }
@@ -206,6 +233,7 @@ struct HistoryDetail: View {
                            // One message, from what is actually true: with the audio, the engine's advice applies; without it, nothing can be retried.
                            detail: audio == nil ? t("The recording is no longer kept, so there is nothing to retry.", "La registrazione non è più conservata, quindi non c’è nulla da riprovare.")
                                                 : record.error.map { t.message($0) } ?? t("Listen to the recording, then retry it.", "Ascolta la registrazione, poi riprovala."))
+                    .textSelection(.enabled)
                     .frame(minHeight: 240)
                     .background(Palette.surfaceSunken, in: RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
             } else if original {
@@ -227,25 +255,35 @@ struct HistoryDetail: View {
             Text([t.engine(record.engine), t.spokenLanguage(record.language), t("\(record.processingSeconds.formatted(.number.precision(.fractionLength(1)).locale(t.locale))) s processing", "\(record.processingSeconds.formatted(.number.precision(.fractionLength(1)).locale(t.locale))) s di elaborazione")].filter { !$0.isEmpty }.joined(separator: " · "))
                 .font(Typeface.text(TypeSize.caption)).foregroundStyle(Palette.textTertiary)
             Hairline()
+            // One footer, as in every sheet: what deletes on the left, Done on the right.
             HStack(spacing: Space.sm) {
-                if let audio {
-                    Button { do { player = try AVAudioPlayer(contentsOf: audio); player?.play() } catch { model.notify(error.localizedDescription) } } label: { Label(t("Listen", "Ascolta"), systemImage: "play.fill") }
-                        .buttonStyle(VerbButtonStyle(kind: .secondary))
-                    if record.mode == .dictation {
-                        Button { model.retry(record); dismiss() } label: { Label(t("Retry", "Riprova"), systemImage: "arrow.clockwise") }
-                            .buttonStyle(VerbButtonStyle(kind: failed ? .primary : .secondary)).disabled(model.busy)
-                    }
-                }
                 Button(role: .destructive) { confirmDelete = true } label: { Label(t("Delete", "Elimina"), systemImage: "trash") }
                     .buttonStyle(VerbButtonStyle(kind: .danger)).disabled(model.busy)
-                Spacer()
-                if !original && draft != record.text {
-                    Button(t("Save edit", "Salva la modifica")) { model.saveEdited(record, text: draft); dismiss() }.buttonStyle(VerbButtonStyle(kind: .secondary))
+                if let audio {
+                    // While it plays, the button stops it and says how far it is.
+                    Button { listen(audio) } label: {
+                        if playing, let player {
+                            TimelineView(.periodic(from: .now, by: 0.5)) { _ in
+                                Label(t("Stop", "Ferma") + " · " + durationLabel(player.currentTime) + " / " + durationLabel(player.duration), systemImage: "stop.fill").monospacedDigit()
+                                    .onChange(of: player.isPlaying) { _, now in if !now { playing = false } }
+                            }
+                        } else { Label(t("Listen", "Ascolta"), systemImage: "play.fill") }
+                    }
+                    .buttonStyle(VerbButtonStyle(kind: .secondary))
+                    if record.mode == .dictation {
+                        // A retry replaces finished text, edits included: that is asked first.
+                        Button { if record.status == .completed { confirmRetry = true } else { model.retry(record) } } label: { Label(t("Retry", "Riprova"), systemImage: "arrow.clockwise") }
+                            .buttonStyle(VerbButtonStyle(kind: .secondary)).disabled(model.busy)
+                    }
                 }
+                Spacer()
                 if !nothingToCopy {
                     Button { model.copy(original ? record.rawText : draft) } label: { Label(t("Copy", "Copia"), systemImage: "doc.on.doc") }
-                        .buttonStyle(VerbButtonStyle(kind: failed && audio != nil && record.mode == .dictation ? .secondary : .primary))
+                        .buttonStyle(VerbButtonStyle(kind: .secondary))
                 }
+                // Done keeps an edit.
+                Button(edited ? t("Save and close", "Salva e chiudi") : t("Done", "Fine")) { if edited { model.saveEdited(record, text: draft) }; dismiss() }
+                    .buttonStyle(VerbButtonStyle(kind: .primary))
             }
         }
         .padding(Space.xxl)
@@ -257,8 +295,24 @@ struct HistoryDetail: View {
         } message: {
             Text(t("The text and its recording are removed from this Mac.", "Il testo e la sua registrazione vengono rimossi da questo Mac."))
         }
+        .confirmationDialog(t("Replace this text?", "Sostituire questo testo?"), isPresented: $confirmRetry) {
+            Button(t("Retry and replace", "Riprova e sostituisci"), role: .destructive) { model.retry(record) }
+            Button(t("Cancel", "Annulla"), role: .cancel) {}
+        } message: { Text(t("The recording is transcribed again, and the new text takes the place of this one and of your edits.", "La registrazione viene trascritta di nuovo e il nuovo testo prende il posto di questo e delle tue modifiche.")) }
+        .confirmationDialog(t("Save your edit?", "Salvare la modifica?"), isPresented: $confirmClose) {
+            Button(t("Save", "Salva")) { model.saveEdited(record, text: draft); dismiss() }
+            Button(t("Discard the edit", "Butta la modifica"), role: .destructive) { dismiss() }
+            Button(t("Keep editing", "Continua a modificare"), role: .cancel) {}
+        }
         .onAppear { draft = record.text; if record.text.isEmpty && !record.rawText.isEmpty { original = true } }
+        // A retry that finished brings its text here, unless you were changing it.
+        .onChange(of: record.text) { old, new in if draft == old { draft = new; if !new.isEmpty { original = false } } }
         .onDisappear { player?.stop() }
+    }
+
+    private func listen(_ audio: URL) {
+        if playing { player?.stop(); playing = false; return }
+        do { player = try AVAudioPlayer(contentsOf: audio); player?.play(); playing = true } catch { model.notify(error.localizedDescription) }
     }
 }
 

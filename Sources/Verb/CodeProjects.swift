@@ -5,11 +5,8 @@ import VerbCore
 /// Editors and terminals, where Verb turns spoken names into code, and the project each one
 /// has open: from the document in the front window, or its title.
 @MainActor enum CodeApps {
-    static let terminals: Set<String> = ["com.apple.Terminal", "com.googlecode.iterm2", "dev.warp.Warp-Stable", "com.mitchellh.ghostty", "net.kovidgoyal.kitty",
-                                         "io.alacritty", "org.alacritty", "com.github.wez.wezterm", "co.zeit.hyper"]
-    static let editors: Set<String> = ["com.microsoft.VSCode", "com.microsoft.VSCodeInsiders", "com.todesktop.230313mzl4w4u92", "com.exafunction.windsurf", "com.apple.dt.Xcode",
-                                       "com.sublimetext.4", "com.sublimetext.3", "dev.zed.Zed", "dev.zed.Zed-Preview", "com.panic.Nova", "com.barebones.bbedit", "com.google.android.studio"]
-    static func isCode(_ bundleID: String) -> Bool { terminals.contains(bundleID) || editors.contains(bundleID) || bundleID.hasPrefix("com.jetbrains.") }
+    static var terminals: Set<String> { CodeBundles.terminals }
+    static func isCode(_ bundleID: String) -> Bool { CodeBundles.isCode(bundleID) }
 
     /// Where people keep their projects, to find one named in a window's title.
     private static let places = ["Projects", "Developer", "code", "Code", "src", "dev", "Documents/GitHub", "GitHub", "work", "repos", "Sites"]

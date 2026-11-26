@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import VerbCore
+import VerbEngine
 
 /// Renders every page, both appearances and both languages, to PNG files for design review:
 ///
@@ -17,6 +18,12 @@ import VerbCore
             try files.createDirectory(at: directory, withIntermediateDirectories: true)
             let model = try AppModel(dataDirectory: root, services: false)
             try seed(model)
+            // The microphones of a laptop with AirPods on and a USB headset: real devices are never listed.
+            let microphones = [MicrophoneDevice(id: "usb", name: "Jabra Evolve2 30", deviceID: 1, kind: .wired),
+                               MicrophoneDevice(id: "airpods", name: "AirPods Pro", deviceID: 2, kind: .headset),
+                               MicrophoneDevice(id: "mac", name: "MacBook Pro Microphone", deviceID: 3, kind: .builtIn),
+                               MicrophoneDevice(id: "iphone", name: "iPhone Microphone", deviceID: 4, kind: .phone)]
+            model.microphones = microphones; model.automaticMicrophone = microphones[0]
             ShimmerText.still = true
             defer { ShimmerText.still = false }
             var count = 0
@@ -44,93 +51,153 @@ import VerbCore
                     }
                     for page in Page.allCases {
                         model.page = page
-                        try save("page-\(page.rawValue.lowercased())", MainView(), width: 1080, height: 780)
+                        try save("page-\(page.rawValue.lowercased())", MainView().modifier(WindowChrome()), width: 1080, height: 780)
                         // And in the smallest window.
-                        try save("page-\(page.rawValue.lowercased())-narrow", MainView(), width: 900, height: 680)
+                        try save("page-\(page.rawValue.lowercased())-narrow", MainView().modifier(WindowChrome()), width: Sizing.windowMinWidth, height: Sizing.windowMinHeight)
                     }
-                    // Tall enough for the whole page.
-                    for (page, height) in [(Page.settings, 4000.0), (.models, 2300), (.home, 2100)] {
+                    // Every page as the window widens: small, medium, large with cards side by side,
+                    // and at its largest. The sidebar stays whole; the icons alone are its own render.
+                    for page in Page.allCases {
                         model.page = page
-                        try save("full-\(page.rawValue.lowercased())", MainView(), width: 1080, height: height)
+                        for (name, width, height) in [("compact", 820.0, 640.0), ("regular", 900, 680), ("wide", 1440, 900), ("max", Sizing.windowMaxWidth, Sizing.windowMaxHeight)] {
+                            try save("window-\(page.rawValue.lowercased())-\(name)", MainView().modifier(WindowChrome()), width: width, height: height)
+                        }
                     }
+                    // The sidebar with its icons alone, as ⌃⌘S leaves it, in the smallest window and the usual one.
+                    model.settings.sidebarCollapsed = true
+                    for page in [Page.home, .settings] {
+                        model.page = page
+                        try save("window-\(page.rawValue.lowercased())-icons-narrow", MainView().modifier(WindowChrome()), width: Sizing.windowMinWidth, height: Sizing.windowMinHeight)
+                        try save("window-\(page.rawValue.lowercased())-icons", MainView().modifier(WindowChrome()), width: 1080, height: 780)
+                    }
+                    model.settings.sidebarCollapsed = false
+                    // Each page of Settings, whole and in the smallest window. Slack has words of its own.
+                    model.settings.appStyles["web:gmail"] = .formal
+                    model.settings.personalInstructions = t("I’m Tom, product lead at Verb. I sign emails “Tom”.", "Sono Tom, responsabile di prodotto in Verb. Firmo le email “Tom”.")
+                    model.settings.customMeetingTemplates = [MeetingTemplate(id: "board", name: t("Board", "Consiglio"), instruction: t("Decisions, owners and dates only.", "Solo decisioni, responsabili e date."))]
+                    model.settings.appStyles["com.tinyspeck.slackmacgap"] = .custom
+                    model.settings.stylePrompts["com.tinyspeck.slackmacgap"] = t("Short and friendly, no full stop at the end", "Brevi e cordiali, senza punto finale")
+                    model.page = .settings
+                    for tab in SettingsTab.allCases {
+                        model.settingsTab = tab
+                        try save("settings-\(tab.rawValue)", MainView().modifier(WindowChrome()), width: 1080, height: 1100)
+                        try save("settings-\(tab.rawValue)-narrow", MainView().modifier(WindowChrome()), width: Sizing.windowMinWidth, height: Sizing.windowMinHeight)
+                    }
+                    model.settingsTab = .general
+                    // Tall enough for the whole page.
+                    for (page, height) in [(Page.models, 2300.0), (.home, 2100)] {
+                        model.page = page
+                        try save("full-\(page.rawValue.lowercased())", MainView().modifier(WindowChrome()), width: 1080, height: height)
+                    }
+                    // Both stages on servers, remote processing still off: the speech server on this Mac answers, the hosted writing server is refused.
+                    let local = model.settings
+                    model.settings.speechProvider = .endpoint; model.settings.speechEndpoint = "http://localhost:8000/v1/audio/transcriptions"
+                    model.settings.cleanupProvider = .endpoint; model.settings.hostedCleanupModel = "llama-3.3-70b-versatile"; model.page = .models
+                    model.endpointTrials = ["speech": EndpointTrial(passed: true, text: "1.2 s · “See you tomorrow at three.”"), "writing": EndpointTrial(passed: false, text: "Remote processing is off. Turn on “Allow remote processing” in Settings → Privacy to use this server.")]
+                    try save("full-models-servers", MainView().modifier(WindowChrome()), width: 1080, height: 2300)
+                    model.settings = local; model.endpointTrials = [:]
                     // Each page with nothing in it yet.
                     let library = model.library, notes = model.notes, open = model.openNote
                     model.history = []; model.library.vocabulary = []; model.library.snippets = []; model.library.transforms = []; model.notes = []; model.openNote = nil
                     for page in [Page.history, .dictionary, .snippets, .transforms, .notes] {
                         model.page = page
-                        try save("page-\(page.rawValue.lowercased())-empty", MainView(), width: 1080, height: 780)
+                        try save("page-\(page.rawValue.lowercased())-empty", MainView().modifier(WindowChrome()), width: 1080, height: 780)
                     }
                     model.library = library; model.notes = notes; model.openNote = open; model.reloadHistory()
-                    // The notepad over other apps, at its smallest.
-                    try save("panel-notepad", NotesPanelView(), width: 560, height: 380)
+                    // The notepad over other apps: at its smallest, where it shows one note at a time, and
+                    // its list asked for; just wide enough for the list beside the note; at its largest.
+                    try save("panel-notepad", NotesPanelView(), width: Sizing.notepadMinWidth, height: Sizing.notepadMinHeight)
+                    try save("panel-notepad-list", NotesPanelView(showingList: true), width: Sizing.notepadMinWidth, height: Sizing.notepadMinHeight)
+                    try save("panel-notepad-regular", NotesPanelView(), width: Sizing.notepadListBelow, height: 420)
+                    try save("panel-notepad-max", NotesPanelView(), width: Sizing.notepadMaxWidth, height: Sizing.notepadMaxHeight)
                     // A recording dragged over History, about to be dropped.
                     model.page = .history
-                    try save("page-history-drop", MainView().environment(\.previewingDrop, true), width: 1080, height: 780)
+                    try save("page-history-drop", MainView().modifier(WindowChrome()).environment(\.previewingDrop, true), width: 1080, height: 780)
 
                     // A first launch: nothing dictated, nothing set up.
                     let history = model.history, latest = model.latestText, stats = model.stats
                     model.history = []; model.latestText = ""; model.stats = DictationStats(); model.microphoneGranted = false; model.speechInstalled = false
                     model.page = .home
-                    try save("page-home-empty", MainView(), width: 1080, height: 900)
+                    try save("page-home-empty", MainView().modifier(WindowChrome()), width: 1080, height: 900)
                     model.history = history; model.latestText = latest; model.stats = stats; model.microphoneGranted = true; model.speechInstalled = true
 
                     // Dictation in progress, then the moments after it.
                     // Six seconds of made-up speech, held at one moment so every image shows the same ink.
                     model.meter.preview((0..<600).map { index in let x = Double(index) / 10; return Float(max(0, sin(x * 0.32) * 0.55 + sin(x * 1.7) * 0.2 + 0.25)) })
                     model.phase = .recording; model.handsFree = true; model.elapsed = 12
-                    try save("page-home-recording", MainView(), width: 1080, height: 780)
-                    try draw("overlay-recording", OverlayBackdrop(), width: 460, height: 130)
-                    // The classic capsule's captions. The longest: holding the key, past ten minutes.
-                    let style = model.settings.overlayStyle
-                    model.settings.overlayStyle = .classic
-                    model.handsFree = false; model.elapsed = 754
-                    try draw("overlay-recording-hold", OverlayBackdrop(), width: 460, height: 130)
-                    model.handsFree = true; model.elapsed = 12
-                    // Started with "Ehi Verb": the way to finish is spoken too.
-                    model.startedByVoice = true
-                    try draw("overlay-recording-voice", OverlayBackdrop(), width: 460, height: 130)
-                    model.startedByVoice = false
-                    model.settings.overlayStyle = style
-                    // The words as they form: settled in ink, the part still being heard lighter.
-                    model.liveText = t("Let’s meet on Wednesday at three at the office.", "Ci vediamo mercoledì alle tre in ufficio.")
-                    model.liveTentative = t("I’ll bring the signed documents and", "Porto io i documenti firmati e")
-                    try draw("overlay-preview", PreviewBackdrop(), width: 460, height: 230)
-                    // A long dictation keeps its newest words in view.
-                    model.liveText = t("Thanks for the notes on the draft. I went through all of them this morning and most are already in. The two about the budget need a call, because the numbers changed last week and I would rather explain than write.",
-                                       "Grazie per le note sulla bozza. Le ho riviste tutte stamattina e quasi tutte sono già dentro. Le due sul budget richiedono una telefonata, perché i numeri sono cambiati la settimana scorsa e preferisco spiegarlo a voce.")
-                    model.liveTentative = t("Are you free tomorrow", "Sei libero domani")
-                    try draw("overlay-preview-long", PreviewBackdrop(), width: 460, height: 230)
-                    model.liveText = ""; model.liveTentative = ""
-                    model.phase = .polishing
-                    // The spinner is an AppKit view, which ImageRenderer cannot draw. This capture adds hairlines at the capsule's ends that the screen never shows.
-                    try save("overlay-working", OverlayBackdrop(), width: 460, height: 130)
-                    // A voice edit on its way through the writing model: the pen writes by itself.
-                    model.rewrite = .voiceEdit
-                    try draw("overlay-editing", OverlayBackdrop(), width: 460, height: 130)
-                    model.rewrite = nil
-                    model.phase = .idle; model.outcome = .delivered; model.status = "Paste sent to Mail"
-                    try draw("overlay-done", OverlayBackdrop(), width: 460, height: 130)
-                    model.outcome = .failed; model.status = "Couldn't finish dictation"; model.keptRecording = true
-                    try draw("overlay-failed", OverlayBackdrop(), width: 460, height: 130)
-                    model.outcome = .cancelled; model.status = "Cancelled · recording saved"
-                    try draw("overlay-cancelled", OverlayBackdrop(), width: 460, height: 130)
-                    // Cancelled a moment ago: Restore writes it down after all.
-                    model.restorable = CancelledDictation(record: DictationRecord(duration: 4), target: nil, settings: model.settings, library: model.library)
-                    try draw("overlay-cancelled-restore", OverlayBackdrop(), width: 460, height: 130)
-                    model.restorable = nil
-                    // A word retyped after a dictation, offered to the dictionary.
-                    model.pendingSuggestion = VocabularySuggestion(word: "Tommaso", heardAs: "Tomaso")
-                    try draw("overlay-suggestion", OverlayBackdrop(), width: 460, height: 130)
-                    model.pendingSuggestion = nil
-                    // Nothing to type into, such as the desktop: the text waits as the last dictation, the clipboard untouched.
-                    model.outcome = .copyOnly; model.status = TextInserter.keptNoField
-                    try draw("overlay-kept", OverlayBackdrop(), width: 460, height: 130)
-                    // The copy key put the last dictation on the clipboard.
-                    model.outcome = .copied; model.status = "Copied to clipboard"
-                    try draw("overlay-copied", OverlayBackdrop(), width: 460, height: 130)
-                    model.keptRecording = false
+                    try save("page-home-recording", MainView().modifier(WindowChrome()), width: 1080, height: 780)
+                    // The overlay at the bottom in each style: speaking, under the pointer, open with
+                    // the words, at work and done. The made-up speech is held at one moment.
+                    let chosen = model.settings.overlayStyle
+                    let said = t("Let’s meet on Wednesday at three.", "Ci vediamo mercoledì alle tre."), saying = t("I’ll bring the slides", "Porto io le slide")
+                    for style in OverlayStyle.allCases where style != .notch {
+                        model.settings.overlayStyle = style
+                        model.phase = .recording; model.handsFree = true; model.elapsed = 12; model.outcome = .none
+                        try save("overlay-\(style.rawValue)-recording", OverlayBackdrop(), width: 460, height: 120)
+                        try save("overlay-\(style.rawValue)-pointer", OverlayBackdrop(pointer: true), width: 460, height: 120)
+                        model.liveText = said; model.liveTentative = saying
+                        try save("overlay-\(style.rawValue)-words", OverlayBackdrop(), width: 520, height: 180)
+                        model.liveText = ""; model.liveTentative = ""
+                        model.phase = .polishing
+                        try save("overlay-\(style.rawValue)-working", OverlayBackdrop(), width: 460, height: 120)
+                        model.phase = .idle; model.outcome = .delivered; model.status = "Paste sent to Mail"
+                        try save("overlay-\(style.rawValue)-done", OverlayBackdrop(), width: 460, height: 120)
+                    }
+                    model.settings.overlayStyle = .pill
+                    model.phase = .recording; model.outcome = .none
+                    // Over real content: a dark editor and a white page.
+                    try save("overlay-recording-over-editor", OverlayBackdrop(ground: .editor), width: 460, height: 120)
+                    try save("overlay-recording-over-page", OverlayBackdrop(ground: .page), width: 460, height: 120)
                     // Every style side by side, to choose one.
                     if wanted("overlay-board") { try board(model, t, dark: dark, to: directory.appendingPathComponent("overlay-board-\(suffix).png")); count += 1 }
+
+                    // What the overlay says once it opens, the same in every style: at the bottom with
+                    // the Pill, and at the top on a MacBook's notch, on a display with neither notch
+                    // nor menu bar, and on one with a menu bar.
+                    let opened = Snapshots.openStates(model, t)
+                    for state in opened where state.bottom {
+                        state.apply()
+                        try save("overlay-\(state.name)", OverlayBackdrop(), width: 560, height: state.height + 40)
+                        Snapshots.calm(model)
+                    }
+                    model.settings.overlayStyle = .notch
+                    for (screen, tag) in [(Snapshots.laptop, ""), (Snapshots.display, "-plain"), (Snapshots.displayWithBar, "-bar")] {
+                        func island(_ name: String, height: CGFloat, pointer: Bool = false, near: Bool = false, room: CGFloat? = nil) throws {
+                            try save("overlay-notch-\(name)\(tag)", NotchBackdrop(screen: screen, hover: Snapshots.island(screen, pointer: pointer, near: near, room: room)), width: 600, height: height)
+                        }
+                        // At rest: the notch alone; without one, the tab as the pointer comes near.
+                        model.phase = .idle; model.outcome = .none; model.overlayResting = true
+                        try island("rest", height: 80)
+                        try island("rest-near", height: 80, near: true)
+                        try island("rest-pointer", height: 80, pointer: true)
+                        model.overlayResting = false
+                        // Closed: symbols beside the notch.
+                        model.phase = .recording; model.handsFree = true; model.elapsed = 12
+                        try island("recording", height: 80)
+                        // The menus of the app in front reach the notch: the dot goes to the right.
+                        if tag.isEmpty { try island("recording-crowded", height: 80, room: 12) }
+                        model.phase = .polishing
+                        try island("working", height: 80)
+                        try island("working-pointer", height: 120, pointer: true)
+                        model.phase = .idle; model.outcome = .delivered; model.status = "Paste sent to Mail"
+                        try island("done", height: 80)
+                        model.outcome = .copied
+                        try island("copied", height: 80)
+                        model.outcome = .none; model.overlayResting = true
+                        model.meeting = .recording(Date().addingTimeInterval(-754))
+                        try island("meeting", height: 80)
+                        try island("meeting-pointer", height: 120, pointer: true)
+                        model.meeting = .writing("Writing the notes")
+                        try island("writing", height: 80)
+                        model.meeting = .idle; model.overlayResting = false
+                        // Open: one rectangle from the top edge, the words below.
+                        for state in opened where tag.isEmpty || state.everyScreen {
+                            state.apply()
+                            try island(state.name, height: state.height + 40)
+                            Snapshots.calm(model)
+                        }
+                    }
+                    model.settings.overlayStyle = chosen
                     model.phase = .idle; model.outcome = .delivered; model.status = "Ready when you are"; model.meter.reset()
 
                     // Sheets and the menu header.
@@ -144,29 +211,46 @@ import VerbCore
                     try save("sheet-keys-captured", KeyCaptureSheet(target: .dictation, captured: KeyBinding(modifiers: [.control, .option], keyCode: 2, label: "⌃ ⌥ D")), width: 520)
                     try save("sheet-keys-problem", KeyCaptureSheet(target: .dictation, captured: KeyBinding(modifiers: [.option], label: "⌥")), width: 520)
                     // Keys another command had: they will move, and it will have none.
-                    try save("sheet-keys-taken", KeyCaptureSheet(target: .transform(model.library.transforms[0].id), captured: .shiftCommandC), width: 520)
-                    try save("menu-header", MenuHeader(title: t("Ready", "Pronto"), hint: model.shortcutHint(t), live: false).background(Color(nsColor: .windowBackgroundColor)), width: 280, height: 52)
+                    try save("sheet-keys-taken", KeyCaptureSheet(target: .transform(model.library.transforms[0].id), captured: .controlCommandC), width: 520)
+                    // Keys well-known apps use: they can be chosen, and the window names who loses them.
+                    try save("sheet-keys-caution", KeyCaptureSheet(target: .copyLast, captured: .shiftCommandC), width: 520)
+                    // The microphone test: one listening now, and what the others heard.
+                    let tested = MicrophoneTester(results: ["usb": .init(verdict: .clear, voice: -30, room: -62, startup: 0.05),
+                                                            "mac": .init(verdict: .tooNoisy, voice: -23, room: -31, startup: 0.04),
+                                                            "iphone": .init(verdict: .noisy, voice: -26, room: -41, startup: 4.5)],
+                                                  testing: "airpods", level: 0.62)
+                    try save("sheet-microphones", MicrophoneTestSheet(tester: tested), width: 600)
+                    try save("sheet-report", ReportSheet(), width: 560)
+                    // A meeting being recorded, with its kind and the notes typed so far.
+                    model.meeting = .recording(Date().addingTimeInterval(-754)); model.meetingKind = "client"
+                    model.meetingNotes = t("Budget: ask Luca about Q3", "Budget: chiedere a Luca del Q3")
+                    model.page = .notes
+                    try save("page-notes-meeting", MainView().modifier(WindowChrome()), width: 1080, height: 780)
+                    model.meeting = .idle; model.meetingNotes = ""
+                    try save("menu-header", MenuHeader(title: t("Ready", "Pronto"), hint: model.shortcutHint(t)).background(Color(nsColor: .windowBackgroundColor)), width: 280, height: 52)
                     // Listening for "Ehi Verb": Home, the sidebar and the menu say so.
                     model.voiceListening = true; model.settings.voiceOptions.wakeWord = true; model.page = .home
-                    try save("page-home-listening", MainView(), width: 1080, height: 780)
-                    try save("menu-header-listening", MenuHeader(title: t("Listening", "In ascolto"), hint: model.startHint(t), live: false).background(Color(nsColor: .windowBackgroundColor)), width: 280, height: 52)
+                    try save("page-home-listening", MainView().modifier(WindowChrome()), width: 1080, height: 780)
+                    try save("menu-header-listening", MenuHeader(title: t("Listening", "In ascolto"), hint: model.startHint(t), mark: .listening, markLabel: t("Listening", "In ascolto")).background(Color(nsColor: .windowBackgroundColor)), width: 280, height: 52)
                     model.voiceListening = false; model.settings.voiceOptions.wakeWord = false
+                    // Keys that can't work: the menu says why instead of Ready.
+                    try save("menu-header-problem", MenuHeader(title: t("Keys blocked", "Tasti bloccati"), hint: t("Terminal has secure input on", "Terminale ha l’input sicuro attivo"), mark: .problem, markLabel: t("Keys blocked", "Tasti bloccati")).background(Color(nsColor: .windowBackgroundColor)), width: 280, height: 52)
 
                     // Trying the phrase: the engine wrote it another way, which can be taught.
-                    model.page = .settings
+                    model.page = .settings; model.settingsTab = .voice
                     model.voiceTrial = .heard(.wake, text: "E verbe.", understood: false, lesson: VoiceCommands.Lesson(heard: "e verbe", command: nil))
-                    try save("full-settings-trial", MainView(), width: 1080, height: 2600)
+                    try save("settings-trial", MainView().modifier(WindowChrome()), width: 1080, height: 1300)
                     model.voiceTrial = .heard(.finish, text: "Ever stop.", understood: false, lesson: VoiceCommands.Lesson(heard: "ever stop", command: "stop"))
-                    try save("full-settings-trial-closing", MainView(), width: 1080, height: 2600)
+                    try save("settings-trial-closing", MainView().modifier(WindowChrome()), width: 1080, height: 1300)
                     model.voiceTrial = .common(.wake, text: "Ever.", lesson: VoiceCommands.Lesson(heard: "ever", command: nil))
-                    try save("full-settings-trial-common", MainView(), width: 1080, height: 2600)
-                    model.voiceTrial = .idle
+                    try save("settings-trial-common", MainView().modifier(WindowChrome()), width: 1080, height: 1300)
+                    model.voiceTrial = .idle; model.settingsTab = .general
 
                     // More transforms than keys: the tenth and after are in the menu bar.
                     let transforms = model.library.transforms
                     model.library.transforms += (1...7).map { Transform(name: t("Prompt \($0)", "Prompt \($0)"), instruction: t("Rewrite the text as a short list of points.", "Riscrivi il testo come un breve elenco di punti.")) }
                     model.page = .transforms
-                    try save("full-transforms-many", MainView(), width: 1080, height: 1500)
+                    try save("full-transforms-many", MainView().modifier(WindowChrome()), width: 1080, height: 1500)
                     model.library.transforms = transforms
 
                     // The welcome, page by page: the microphone allowed, Accessibility still to switch on,
@@ -175,13 +259,14 @@ import VerbCore
                     model.accessibilityGranted = false
                     for step in WelcomeStep.allCases {
                         model.welcome = step
-                        try save("welcome-\(step.rawValue + 1)-\(step)", MainView(), width: 1080, height: 780)
+                        try save("welcome-\(step.rawValue + 1)-\(step)", MainView().modifier(WindowChrome()), width: 1080, height: 780)
                         // And in the narrowest window.
-                        try save("welcome-\(step.rawValue + 1)-\(step)-narrow", MainView(), width: 900, height: 680)
+                        try save("welcome-\(step.rawValue + 1)-\(step)-narrow", MainView().modifier(WindowChrome()), width: Sizing.windowMinWidth, height: Sizing.windowMinHeight)
                     }
                     // The speech model on its way.
-                    model.welcome = .models; model.speechInstalled = false; model.downloadingSpeech = true; model.downloadProgress = 0.42; model.downloadStatus = "Downloading Parakeet v3 · MLX…"
-                    try save("welcome-3-models-downloading", MainView(), width: 1080, height: 780)
+                    model.welcome = .models; model.speechInstalled = false; model.downloadingSpeech = true; model.downloadProgress = 0.42; model.downloadStatus = "Downloading Parakeet v3…"
+                    try save("welcome-3-models-downloading", MainView().modifier(WindowChrome()), width: 1080, height: 780)
+                    try save("welcome-3-models-downloading-narrow", MainView().modifier(WindowChrome()), width: Sizing.windowMinWidth, height: Sizing.windowMinHeight)
                     model.speechInstalled = true; model.downloadingSpeech = false; model.downloadProgress = 0; model.downloadStatus = ""
                     model.accessibilityGranted = true
                     // Two gestures tried, and Verb hearing the third.
@@ -196,10 +281,10 @@ import VerbCore
                     // The tour at a few of its stops.
                     for stop in [0, 2, 3, 6, 7] {
                         model.moveTour(to: stop)
-                        try save("tour-\(stop + 1)", MainView(), width: 1080, height: 780)
+                        try save("tour-\(stop + 1)", MainView().modifier(WindowChrome()), width: 1080, height: 780)
                     }
                     model.moveTour(to: 3)
-                    try save("tour-4-narrow", MainView(), width: 900, height: 680)
+                    try save("tour-4-narrow", MainView().modifier(WindowChrome()), width: Sizing.windowMinWidth, height: Sizing.windowMinHeight)
                     model.endTour()
                 }
             }
@@ -216,38 +301,99 @@ import VerbCore
 
     static let quietHover = OverlayHover()
     static let pointerHover: OverlayHover = { let hover = OverlayHover(); hover.inside = true; return hover }()
+    /// The island on a 14-inch MacBook Pro, its notch 185 points wide and 32 tall, and on a
+    /// display without a notch or a menu bar; the pointer away or over it.
+    static let laptop = IslandGeometry.screen(width: 1512, left: CGSize(width: 663.5, height: 32), right: CGSize(width: 663.5, height: 32), safeTop: 32, menuBar: 33)
+    static let display = IslandGeometry.screen(width: 1920, left: nil, right: nil, safeTop: 0, menuBar: 0)
+    static let displayWithBar = IslandGeometry.screen(width: 1920, left: nil, right: nil, safeTop: 0, menuBar: 25)
+    static func island(_ geometry: IslandGeometry, pointer: Bool, near: Bool = false, room: CGFloat? = nil) -> OverlayHover {
+        let hover = OverlayHover(); hover.island = geometry; hover.inside = pointer; hover.near = near; hover.leftRoom = room; return hover
+    }
 
-    /// The compact styles in the states that matter, side by side, with the classic capsule below.
+    /// One open state of the overlay: its name, how to set it up, how tall it stands, and
+    /// whether it is drawn at the bottom and on every screen too.
+    struct OpenState {
+        let name: String
+        let height: CGFloat
+        var bottom = true
+        var everyScreen = false
+        let apply: () -> Void
+    }
+    /// Every way the overlay opens, with sample words.
+    static func openStates(_ model: AppModel, _ t: Lang) -> [OpenState] {
+        let said = t("Let’s meet on Wednesday at three.", "Ci vediamo mercoledì alle tre."), saying = t("I’ll bring the slides", "Porto io le slide")
+        let speaking: () -> Void = { model.phase = .recording; model.handsFree = true; model.elapsed = 12; model.outcome = .none; model.liveText = said; model.liveTentative = saying }
+        let question = t("How far is the Moon from the Earth?", "Quanto dista la Luna dalla Terra?")
+        let answer = t("On average **384,400 km**. It varies from about 363,000 km at its closest (perigee) to 405,000 km at its farthest (apogee), because the orbit is an ellipse.",
+                       "In media **384.400 km**. Non è sempre la stessa: va da circa 363.000 km quando è più vicina (perigeo) a 405.000 km quando è più lontana (apogeo), perché l’orbita è un’ellisse.")
+        let dictation = t("Hi Marco, I can confirm Wednesday’s meeting at three. I’ll bring the slides with the quarter’s numbers and a proposal for November’s budget. If you can, send the agenda first so we can prepare.",
+                          "Ciao Marco, ti confermo la riunione di mercoledì alle tre. Porto io le slide con i numeri del trimestre e una proposta per il budget di novembre. Se riesci, mandami prima l’ordine del giorno così ci prepariamo con calma.")
+        return [
+            OpenState(name: "words", height: 92, everyScreen: true, apply: speaking),
+            OpenState(name: "silence", height: 112, apply: { speaking(); model.silenceLeft = 3 }),
+            OpenState(name: "edit", height: 112, apply: { speaking(); model.previewMode = .command; model.liveText = t("make it more formal", "rendilo più formale"); model.liveTentative = t("and shorter", "e più breve") }),
+            OpenState(name: "empty", height: 72, apply: { model.phase = .idle; model.outcome = .empty; model.status = "No speech detected" }),
+            OpenState(name: "cancelled", height: 82, apply: { model.phase = .idle; model.outcome = .cancelled; model.restorable = CancelledDictation(record: DictationRecord(duration: 4), target: nil, settings: model.settings, library: model.library) }),
+            OpenState(name: "failed", height: 90, apply: { model.phase = .idle; model.outcome = .failed; model.status = "Couldn't finish dictation"; model.keptRecording = true }),
+            OpenState(name: "box", height: Sizing.overlayBoxHeight, everyScreen: true, apply: { model.phase = .idle; model.outcome = .copyOnly; model.status = TextInserter.keptNoField; model.pasteBox = dictation }),
+            OpenState(name: "box-copied", height: Sizing.overlayBoxHeight, apply: { model.phase = .idle; model.outcome = .copyOnly; model.pasteBox = dictation; model.pasteCopied = true }),
+            OpenState(name: "ask-listening", height: Sizing.overlayBoxHeight, apply: { speaking(); model.askingOnly = true; model.liveText = t("How far is the Moon", "Quanto dista la Luna"); model.liveTentative = t("from the Earth", "dalla Terra") }),
+            OpenState(name: "ask-thinking", height: Sizing.overlayBoxHeight, apply: { model.phase = .polishing; model.askingOnly = true; model.answer = AnswerCard(request: question, streaming: true) }),
+            OpenState(name: "ask-answer", height: Sizing.overlayBoxHeight, everyScreen: true, apply: { model.phase = .idle; model.outcome = .delivered; model.askingOnly = true; model.answer = AnswerCard(request: question, text: answer, canInsert: true); model.answerArmed = true }),
+            OpenState(name: "ask-follow-up", height: Sizing.overlayBoxHeight, apply: {
+                model.phase = .idle; model.outcome = .delivered; model.askingOnly = true
+                let next = t("And the Sun?", "E il Sole?"), sun = t("On average about **149.6 million km**: the astronomical unit. It is a little closer in January, a little farther in July.",
+                                                                       "In media circa **149,6 milioni di km**: è l’unità astronomica. A gennaio è un po’ più vicino, a luglio un po’ più lontano.")
+                model.conversation = [Assistant.Turn(question: question, answer: answer), Assistant.Turn(question: next, answer: sun)]
+                model.answer = AnswerCard(request: next, text: sun)
+            }),
+            OpenState(name: "files", height: Sizing.overlayBoxHeight, apply: {
+                model.phase = .idle; model.outcome = .delivered
+                model.answer = AnswerCard(request: t("Find the file budget 2026", "Cerca il file budget 2026"),
+                                          files: ["~/Documents/Budget 2026.xlsx", "~/Documents/Clients/Budget 2026 - draft.docx", "~/Desktop/budget-2026-notes.md"].map { URL(fileURLWithPath: ($0 as NSString).expandingTildeInPath) })
+            }),
+            OpenState(name: "meeting-offer", height: 90, apply: { model.phase = .idle; model.outcome = .none; model.meetingOffer = "Zoom" }),
+            OpenState(name: "meeting-ended", height: 90, apply: { model.phase = .idle; model.outcome = .none; model.meetingEnded = "Microsoft Teams" }),
+            OpenState(name: "coach-click", height: 82, apply: { model.phase = .idle; model.outcome = .none; model.coach = .click(app: t("Messages", "Messaggi"), bundleID: "com.apple.MobileSMS") }),
+            OpenState(name: "suggestion", height: 90, apply: { model.phase = .idle; model.outcome = .none; model.pendingSuggestion = VocabularySuggestion(word: "Tommaso", heardAs: "Tomaso") }),
+        ]
+    }
+    /// Back to nothing showing, after an open state.
+    static func calm(_ model: AppModel) {
+        model.phase = .idle; model.outcome = .none; model.status = "Ready when you are"
+        model.liveText = ""; model.liveTentative = ""; model.silenceLeft = nil; model.previewMode = nil
+        model.restorable = nil; model.keptRecording = false; model.pasteBox = nil; model.pasteCopied = false
+        model.askingOnly = false; model.answer = nil; model.answerArmed = false; model.conversation = []
+        model.meetingOffer = nil; model.meetingEnded = nil; model.coach = nil; model.pendingSuggestion = nil
+    }
+
+    /// The styles at the bottom in the states that matter, side by side.
     private static func board(_ model: AppModel, _ t: Lang, dark: Bool, to url: URL) throws {
         let saved = model.settings.overlayStyle
-        defer { model.settings.overlayStyle = saved }
-        let recording: () -> Void = { model.phase = .recording; model.handsFree = true; model.startedByVoice = false; model.elapsed = 12 }
+        defer { model.settings.overlayStyle = saved; calm(model) }
+        let recording: () -> Void = { calm(model); model.phase = .recording; model.handsFree = true; model.startedByVoice = false; model.elapsed = 12 }
         let states: [(title: String, pointer: Bool, apply: () -> Void)] = [
             (t("Recording", "In registrazione"), false, recording),
             (t("Pointer over it", "Con il puntatore"), true, recording),
-            (t("Working", "In elaborazione"), false, { model.phase = .transcribing }),
-            (t("Voice edit", "Modifica a voce"), false, { model.phase = .polishing; model.rewrite = .voiceEdit }),
-            (t("Pointer over it", "Con il puntatore"), true, { model.phase = .polishing; model.rewrite = .voiceEdit }),
-            (t("No text field", "Nessun campo"), false, { model.phase = .idle; model.rewrite = nil; model.outcome = .copyOnly; model.status = TextInserter.keptNoField }),
-            (t("Done", "Fatto"), false, { model.phase = .idle; model.outcome = .delivered }),
-            (t("Cancelled", "Annullata"), false, { model.phase = .idle; model.outcome = .cancelled; model.restorable = CancelledDictation(record: DictationRecord(duration: 4), target: nil, settings: model.settings, library: model.library) }),
+            (t("Working", "In elaborazione"), false, { calm(model); model.phase = .transcribing }),
+            (t("Voice edit", "Modifica a voce"), false, { calm(model); model.phase = .polishing; model.rewrite = .voiceEdit }),
+            (t("Done", "Fatto"), false, { calm(model); model.rewrite = nil; model.outcome = .delivered }),
+            (t("Copied", "Copiata"), false, { calm(model); model.outcome = .copied }),
+            (t("No speech", "Nessuna voce"), false, { calm(model); model.outcome = .empty; model.status = "No speech detected" }),
         ]
         func cell(_ pointer: Bool) throws -> NSImage {
             try image(OverlayView(meter: model.meter).environmentObject(model).environmentObject(pointer ? pointerHover : quietHover)
                         .environment(\.lang, t).environment(\.locale, t.locale), dark: dark)
         }
         var rows: [BoardRow] = []
-        for style in OverlayStyle.allCases where style != .classic {
+        for style in OverlayStyle.allCases where style != .notch {
             model.settings.overlayStyle = style
             var cells: [NSImage] = []
             for state in states { state.apply(); cells.append(try cell(state.pointer)) }
             rows.append(BoardRow(title: style.title(t), detail: style.detail(t), cells: cells))
         }
-        model.settings.overlayStyle = .classic
-        model.restorable = nil
-        recording()
-        let classic = try cell(false)
-        try renderFitted(OverlayBoard(columns: states.map(\.title), rows: rows, classic: classic, t: t), dark: dark, to: url)
+        model.rewrite = nil
+        try renderFitted(OverlayBoard(columns: states.map(\.title), rows: rows, t: t), dark: dark, to: url)
     }
 
     private static func image<V: View>(_ view: V, dark: Bool) throws -> NSImage {
@@ -278,7 +424,7 @@ import VerbCore
             (-0.4, "Mail", "com.apple.mail", "Ci vediamo mercoledì alle tre in ufficio. Porto io i documenti firmati e la bozza del contratto, così li rivediamo insieme.", .dictation, .completed, nil),
             (-2.2, "Slack", "com.tinyspeck.slackmacgap", "Thanks for the notes. I'll send the revised draft tomorrow morning, before the call.", .dictation, .completed, nil),
             (-5.1, "Notes", "com.apple.Notes", "Idee per la presentazione: aprire con il caso di Torino, poi i numeri del trimestre, chiudere con le domande.", .dictation, .completed, nil),
-            (-26, "Safari", "com.apple.Safari", "", .dictation, .failed, "No words were recognized. You can listen to the recording and retry."),
+            (-26, "Safari", "com.apple.Safari", "", .dictation, .failed, "No words were recognized."),
             (-27, "Pages", "com.apple.iWork.Pages", "Il progetto parte a ottobre, con una prima consegna entro fine mese.", .command, .completed, nil),
             (-74, "Messages", "com.apple.MobileSMS", "Arrivo tra dieci minuti, tienimi un posto.", .dictation, .completed, nil),
         ]
@@ -361,9 +507,28 @@ import VerbCore
         RunLoop.main.run(until: Date().addingTimeInterval(0.4))
         guard let bitmap = host.bitmapImageRepForCachingDisplay(in: host.bounds) else { throw VerbError("Could not allocate a bitmap for \(url.lastPathComponent).") }
         host.cacheDisplay(in: host.bounds, to: bitmap)
-        window.orderOut(nil)
+        // Let the view go: a window kept around would lay itself out again at every later change of the model.
+        window.orderOut(nil); window.contentView = nil
         guard let data = bitmap.representation(using: .png, properties: [:]) else { throw VerbError("Could not encode \(url.lastPathComponent).") }
         try data.write(to: url)
+    }
+}
+
+/// The window's close, minimise and zoom buttons where macOS draws them. A capture of the view
+/// alone leaves them out; drawn here, a render shows what they line up with.
+private struct WindowChrome: ViewModifier {
+    @EnvironmentObject var model: AppModel
+    func body(content: Content) -> some View {
+        let frame = model.windowButtons.frame
+        content.overlay(alignment: .topLeading) {
+            HStack(spacing: (frame.width - 42) / 2) {
+                ForEach([NSColor.systemRed, .systemYellow, .systemGreen], id: \.self) { color in
+                    Circle().fill(Color(nsColor: color)).frame(width: 12, height: 12).frame(width: 14, height: frame.height)
+                }
+            }
+            .offset(x: frame.minX, y: frame.minY)
+            .allowsHitTesting(false).accessibilityHidden(true)
+        }
     }
 }
 
@@ -388,13 +553,12 @@ private struct BoardRow {
 private struct OverlayBoard: View {
     let columns: [String]
     let rows: [BoardRow]
-    let classic: NSImage
     let t: Lang
     var body: some View {
         VStack(alignment: .leading, spacing: Space.xxl) {
             VStack(alignment: .leading, spacing: Space.xs) {
-                Text(t("The overlay in four compact styles", "La capsula in quattro stili compatti")).font(Typeface.display(TypeSize.title2)).foregroundStyle(Palette.textPrimary)
-                Text(t("The small buttons show only under the pointer. In every style Space finishes and Escape cancels.", "I tasti piccoli compaiono solo sotto il puntatore. In ogni stile Spazio termina ed Esc annulla."))
+                Text(t("The overlay at the bottom, in five styles", "La capsula in basso, in cinque stili")).font(Typeface.display(TypeSize.title2)).foregroundStyle(Palette.textPrimary)
+                Text(t("Only symbols, numbers and keys on the row; words when it opens. In every style Space finishes and Escape cancels.", "Sulla riga solo simboli, numeri e tasti; le parole quando si apre. In ogni stile Spazio termina ed Esc annulla."))
                     .font(Typeface.text(TypeSize.body)).foregroundStyle(Palette.textSecondary)
             }
             Grid(alignment: .leading, horizontalSpacing: Space.xxl, verticalSpacing: Space.xxl) {
@@ -417,30 +581,39 @@ private struct OverlayBoard: View {
                     }
                 }
             }
-            HStack(alignment: .center, spacing: Space.xxl) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(t("Classic", "Classica")).font(Typeface.display(TypeSize.reading)).foregroundStyle(Palette.textPrimary)
-                    Text(OverlayStyle.classic.detail(t)).font(Typeface.text(TypeSize.caption)).foregroundStyle(Palette.textSecondary)
-                }
-                .frame(width: 180, alignment: .leading)
-                Image(nsImage: classic).shadow(color: Palette.shadow, radius: 10, y: 3)
-            }
         }
         .padding(Space.huge)
         .background(LinearGradient(colors: [Color(nsColor: .windowBackgroundColor), Color(nsColor: .underPageBackgroundColor)], startPoint: .top, endPoint: .bottom))
     }
 }
 
-/// The preview card above the overlay, as the two panels stand on screen.
-private struct PreviewBackdrop: View {
+/// The top of a screen, where the notch style hangs: its menu bar, with menus that reach the
+/// notch when the room left of it is small, and the notch.
+private struct NotchBackdrop: View {
     @EnvironmentObject var model: AppModel
+    var screen = Snapshots.laptop
+    var hover: OverlayHover
     var body: some View {
-        ZStack {
+        ZStack(alignment: .top) {
             LinearGradient(colors: [Color(nsColor: .windowBackgroundColor), Color(nsColor: .underPageBackgroundColor)], startPoint: .top, endPoint: .bottom)
-            VStack(spacing: -LivePreviewView.overlap) {
-                LivePreviewView()
-                OverlayView(meter: model.meter).environmentObject(Snapshots.quietHover)
+            if screen.menuBar > 0 {
+                ZStack(alignment: .leading) {
+                    Rectangle().fill(Color(nsColor: .windowBackgroundColor).opacity(0.6))
+                    // Menus up to the notch, as a busy app's are.
+                    if let room = hover.leftRoom, let notch = screen.notch {
+                        HStack(spacing: 18) {
+                            ForEach(["Cronologia", "Segnalibri", "Finestra", "Aiuto"], id: \.self) { Text($0).font(.system(size: 13, weight: .medium)).foregroundStyle(Color(nsColor: .labelColor)) }
+                        }
+                        .fixedSize()
+                        .frame(width: 300 - notch.width / 2 - room - 8, alignment: .trailing)
+                    }
+                }
+                .frame(height: screen.menuBar)
             }
+            if let notch = screen.notch {
+                UnevenRoundedRectangle(bottomLeadingRadius: NotchOverlay.notchRadius, bottomTrailingRadius: NotchOverlay.notchRadius, style: .continuous).fill(Palette.surfaceNotch).frame(width: notch.width, height: notch.height)
+            }
+            OverlayView(meter: model.meter).environmentObject(hover)
         }
     }
 }
@@ -448,10 +621,30 @@ private struct PreviewBackdrop: View {
 /// The overlay as it floats over another app, with a stand-in for the window shadow macOS draws.
 private struct OverlayBackdrop: View {
     @EnvironmentObject var model: AppModel
+    /// What the overlay sits on: the window's own colours, or real content such as a dark
+    /// editor or a white page.
+    enum Ground { case window, editor, page }
+    var ground: Ground = .window
+    var pointer = false
     var body: some View {
         ZStack {
-            LinearGradient(colors: [Color(nsColor: .windowBackgroundColor), Color(nsColor: .underPageBackgroundColor)], startPoint: .top, endPoint: .bottom)
-            OverlayView(meter: model.meter).environmentObject(Snapshots.quietHover)
+            switch ground {
+            case .window: LinearGradient(colors: [Color(nsColor: .windowBackgroundColor), Color(nsColor: .underPageBackgroundColor)], startPoint: .top, endPoint: .bottom)
+            case .editor:
+                // Code in a dark theme, as in an editor or a terminal.
+                ZStack(alignment: .topLeading) {
+                    Color(red: 0.12, green: 0.12, blue: 0.14)
+                    VStack(alignment: .leading, spacing: 5) {
+                        ForEach(0..<9, id: \.self) { line in
+                            Text(["func finish() {", "    guard phase == .recording else { return }", "    recorder.stop()", "}", "", "// The keys came up.", "let words = text.split(separator: \" \")", "print(words.count)", "return words"][line])
+                                .font(.system(size: 12, design: .monospaced)).foregroundStyle(line == 5 ? Color.gray : Color(red: 0.75, green: 0.8, blue: 0.85))
+                        }
+                    }
+                    .padding(14)
+                }
+            case .page: Color.white
+            }
+            OverlayView(meter: model.meter).environmentObject(pointer ? Snapshots.pointerHover : Snapshots.quietHover)
         }
     }
 }

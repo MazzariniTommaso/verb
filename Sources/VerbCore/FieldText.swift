@@ -6,15 +6,17 @@ import Foundation
 public enum FieldFormatting {
     /// `before` and `after` are the field's text on either side of the insertion point; a
     /// little of each is enough. `isOrdinary` says whether a word is a common Italian or English
-    /// word, so a name keeps its capital; `keep` holds spellings that never change.
-    public static func adjust(_ text: String, before: String, after: String, isOrdinary: (String) -> Bool, keep: Set<String> = []) -> String {
+    /// word, so a name keeps its capital; `keep` holds spellings that never change. Without
+    /// `casing`, as in code and in the Verbatim style, only the spaces change.
+    public static func adjust(_ text: String, before: String, after: String, isOrdinary: (String) -> Bool, keep: Set<String> = [], casing: Bool = true) -> String {
         guard text.contains(where: { $0.isLetter || $0.isNumber }) else { return text }
         var result = text
-        // Casing: a sentence starts after . ! ? … or a new line, or at the top of the field.
+        // Casing: a sentence starts after . ! ? … or any new line, at the top of the field, or
+        // after a list item's marker ("- ", "1) ").
         var context = Substring(before)
         while let last = context.last, last == " " || last == "\t" || ")]}\"”’»'".contains(last) { context = context.dropLast() }
-        let startsSentence = context.isEmpty || ".!?…\n\r".contains(context.last!)
-        if let firstLetter = result.firstIndex(where: \.isLetter), result[..<firstLetter].allSatisfy({ !$0.isNumber }) {
+        let startsSentence = context.isEmpty || context.last!.isNewline || ".!?…。！？".contains(context.last!) || opensListItem(before)
+        if casing, let firstLetter = result.firstIndex(where: \.isLetter), result[..<firstLetter].allSatisfy({ !$0.isNumber }) {
             let word = String(result[firstLetter...].prefix { $0.isLetter || $0 == "'" || $0 == "’" })
             // Code keeps its case: userId, index.ts, max_size.
             let rest = result[firstLetter...].dropFirst(word.count)
@@ -28,10 +30,12 @@ public enum FieldFormatting {
         }
         // A space before, after a word or a mark that ends a sentence. A straight quote opens
         // when it follows a space, and closes when it follows a word.
-        if let last = before.last, !last.isWhitespace, let first = result.first, first.isLetter || first.isNumber || "“\"«([".contains(first) {
+        // Chinese and Japanese take no spaces between words.
+        if let last = before.last, !last.isWhitespace, let first = result.first, first.isLetter || first.isNumber || "“\"«([".contains(first),
+           !isSpaceless(last), !isSpaceless(first) {
             let previous = before.dropLast().last
             let straight = last == "\"" || last == "'"
-            var opens = straight ? previous?.isWhitespace ?? true : "([{“‘«/@#-–—".contains(last)
+            var opens = straight ? previous?.isWhitespace ?? true : "([{“‘«/@#-–—¿¡„‚".contains(last)
             // An elided word joins the next: "l’amico", "dell'anno".
             if last == "'" || last == "’", elides(before.dropLast()) { opens = true }
             // A dash set off by spaces is punctuation, not part of a word: "Il risultato – ottimo".
@@ -44,12 +48,26 @@ public enum FieldFormatting {
         if let next = after.first(where: { $0 != " " && $0 != "\t" }) {
             if next.isLetter || next.isNumber {
                 if next.isLowercase, result.hasSuffix("."), !result.hasSuffix("..") { result.removeLast() }
-                if let last = result.last, !last.isWhitespace, !spaced { result += " " }
+                if let last = result.last, !last.isWhitespace, !spaced, !isSpaceless(last), !isSpaceless(next) { result += " " }
             } else if ".,;:!?".contains(next), result.hasSuffix("."), !result.hasSuffix("..") {
                 result.removeLast()
             }
         }
         return result
+    }
+
+    /// Whether the line so far is only a list item's marker: "- ", "* ", "> ", "1) ", "- [ ] ".
+    static func opensListItem(_ text: String) -> Bool {
+        text.range(of: #"(?m)^[ \t]*(?:[-*•+>]|\d{1,3}[.)]|[-*+][ \t]+\[[ xX]\])[ \t]+\z"#, options: .regularExpression) != nil
+    }
+    /// Chinese and Japanese characters, written without spaces between words.
+    static func isSpaceless(_ character: Character) -> Bool {
+        character.unicodeScalars.contains { scalar in
+            switch scalar.value {
+            case 0x3000...0x303F, 0x3040...0x309F, 0x30A0...0x30FF, 0x3400...0x4DBF, 0x4E00...0x9FFF, 0xF900...0xFAFF, 0xFF00...0xFFEF, 0x20000...0x2FA1F: return true
+            default: return false
+            }
+        }
     }
 
     /// Italian words that lose their vowel before the next word: "l’", "un’", "dell’", "c’".
@@ -181,6 +199,8 @@ public enum FieldTerms {
     /// words with digits, the most frequent and the nearest to the cursor first.
     public static func extract(from text: String, isOrdinary: (String) -> Bool, limit: Int = 40) -> [String] {
         var scores: [String: Double] = [:], openers: [String: Double] = [:]
+        // What follows a password, a token or a key is never a term, whatever it looks like.
+        let text = secretValue.stringByReplacingMatches(in: text, range: NSRange(text.startIndex..., in: text), withTemplate: "$1")
         let sentences = text.components(separatedBy: CharacterSet(charactersIn: ".!?…\n"))
         var position = 0.0
         let total = Double(max(text.count, 1))
@@ -189,7 +209,7 @@ public enum FieldTerms {
             for (index, raw) in tokens.enumerated() {
                 let token = raw.trimmingCharacters(in: CharacterSet(charactersIn: "-_'’"))
                 position += Double(raw.count + 1)
-                guard token.count >= 2, token.contains(where: \.isLetter) else { continue }
+                guard token.count >= 2, token.contains(where: \.isLetter), !isSecretShaped(token) else { continue }
                 let letters = token.filter(\.isLetter)
                 let camel = letters.dropFirst().contains(where: \.isUppercase) && letters.contains(where: \.isLowercase)
                 let snake = token.contains("_")
@@ -205,6 +225,14 @@ public enum FieldTerms {
         }
         for (token, score) in openers where scores[token] != nil { scores[token, default: 0] += score }
         return scores.sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }.prefix(limit).map(\.key)
+    }
+
+    private static let secretValue = try! NSRegularExpression(pattern: #"(?i)(\b[\w.-]*(?:pass(?:word|wd)?|secret|token|api[_-]?key|private[_-]?key|credential|auth)s?\b["']?\s*[:=]\s*)\S+"#)
+    /// Keys and tokens as services issue them: known prefixes, or a long run of letters and digits.
+    static func isSecretShaped(_ token: String) -> Bool {
+        let prefixes = ["sk-", "sk_", "pk_", "rk_", "ghp_", "gho_", "ghu_", "ghs_", "ghr_", "github_pat_", "glpat-", "xoxb-", "xoxp-", "xoxa-", "AKIA", "ASIA", "AIza", "ya29", "eyJ", "hf_", "npm_", "pypi-", "dop_v1_", "shpat_", "whsec_"]
+        if prefixes.contains(where: { token.hasPrefix($0) && token.count > $0.count + 8 }) { return true }
+        return token.count >= 20 && token.contains(where: \.isNumber) && token.contains(where: \.isLetter)
     }
 
     /// Puts back a term the engine misspelled: "Tomaso" becomes "Tommaso" when the field has

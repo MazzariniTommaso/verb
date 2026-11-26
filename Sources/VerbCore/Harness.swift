@@ -44,11 +44,36 @@ public struct HarnessCatalog: Codable, Equatable, Sendable {
     }
 }
 public enum HarnessPolicy {
+    /// Said when a CLI's account check finds no one signed in.
+    public static let notSignedIn = "It isn’t signed in: open Terminal, run the CLI and sign in, then refresh."
+    /// Why a CLI that exited with an error failed, from what it printed. Codex and Claude Code
+    /// report their errors as JSON events on standard output, not on standard error: the
+    /// message of the last one, or else the last line printed. Nil when it said nothing.
+    public static func failureReason(output: String) -> String? {
+        // One JSON object over several lines, as an account check prints.
+        if let data = output.data(using: .utf8), let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            if object["loggedIn"] as? Bool == false { return notSignedIn }
+            if let message = (object["error"] as? [String: Any])?["message"] as? String ?? object["error"] as? String ?? object["message"] as? String { return String(message.prefix(300)) }
+        }
+        var reason: String?
+        for line in output.components(separatedBy: .newlines) {
+            let line = line.trimmingCharacters(in: .whitespaces)
+            guard !line.isEmpty else { continue }
+            guard let data = line.data(using: .utf8), let event = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { reason = line; continue }
+            let error = event["error"] as? [String: Any]
+            if let message = (event["type"] as? String == "error" ? event["message"] as? String : nil) ?? error?["message"] as? String ?? event["error"] as? String
+                ?? (event["is_error"] as? Bool == true ? event["result"] as? String : nil) {
+                reason = message
+            }
+        }
+        return reason.map { String($0.prefix(300)) }
+    }
+
     public static func validateModel(_ model: String) throws {
         guard !model.isEmpty, model.count <= 180, !model.hasPrefix("-"), !model.contains(where: { $0.isWhitespace || $0.isNewline || $0.asciiValue.map { $0 < 32 } == true }) else { throw VerbError("Choose a model from the provider's current list.") }
     }
     public static func requireCloud(_ settings: Settings) throws {
-        guard settings.allowRemoteProcessing else { throw VerbError("Remote processing is off. Enable it before sending text to a subscription CLI.") }
+        guard settings.allowRemoteProcessing else { throw VerbError("Remote processing is off. Turn on “Allow remote processing” in Settings → Privacy to use a subscription CLI.") }
         try validateModel(settings.harnessOptions.model)
     }
     public static func subscriptionAccount(_ provider: HarnessProvider, _ data: [String: Any]) throws -> String {

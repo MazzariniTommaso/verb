@@ -148,21 +148,50 @@ public final class HistoryStore {
     }
     public func prune(retention: Retention, keepAudio: Bool, now: Date = Date()) throws {
         for var record in try all() {
-            if retention == .none || (retention.rawValue > 0 && now.timeIntervalSince(record.createdAt) > Double(retention.rawValue) * 86400) { try delete(record); continue }
-            // A dictation that failed or was cancelled keeps its recording for Retry until it expires.
-            let retryable = record.status == .failed || record.status == .cancelled
-            if let name = record.audioName, (!keepAudio && !retryable) || now.timeIntervalSince(record.createdAt) > 14 * 86400, let url = paths.audioURL(name) {
-                if FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
+            switch Self.fate(of: record, retention: retention, keepAudio: keepAudio, now: now) {
+            case .kept: continue
+            case .deleted: try delete(record)
+            case .silenced:
+                if let name = record.audioName, let url = paths.audioURL(name), FileManager.default.fileExists(atPath: url.path) { try FileManager.default.removeItem(at: url) }
                 record.audioName = nil; try save(record)
             }
         }
     }
-    public func recoverInterrupted() throws {
-        for var record in try all() where record.status == .processing || record.status == .recorded {
-            // A recording cut short never had its sizes written: put them right, so it plays and retries.
-            if let name = record.audioName, let url = paths.audioURL(name) { WAVRepair.repair(url) }
-            record.status = .failed; record.error = "Processing was interrupted. Retry the saved audio."; try save(record)
+    /// What `prune` would remove now, before a setting that removes it is changed.
+    public func pruneCount(retention: Retention, keepAudio: Bool, now: Date = Date()) throws -> (entries: Int, recordings: Int) {
+        var entries = 0, recordings = 0
+        for record in try all() {
+            switch Self.fate(of: record, retention: retention, keepAudio: keepAudio, now: now) {
+            case .kept: break
+            case .deleted: entries += 1
+            case .silenced: recordings += 1
+            }
         }
+        return (entries, recordings)
+    }
+    enum Fate { case kept, deleted, silenced }
+    /// An entry past the history setting goes; a recording goes after 14 days, or with audio off.
+    /// A dictation that failed or was cancelled keeps its recording for Retry until it expires.
+    static func fate(of record: DictationRecord, retention: Retention, keepAudio: Bool, now: Date) -> Fate {
+        if retention == .none || (retention.rawValue > 0 && now.timeIntervalSince(record.createdAt) > Double(retention.rawValue) * 86400) { return .deleted }
+        let retryable = record.status == .failed || record.status == .cancelled
+        if record.audioName != nil, (!keepAudio && !retryable) || now.timeIntervalSince(record.createdAt) > 14 * 86400 { return .silenced }
+        return .kept
+    }
+    /// Dictations a quit or a crash cut short become failed ones, to retry; how many there were.
+    @discardableResult public func recoverInterrupted() throws -> Int {
+        var count = 0
+        for var record in try all() where record.status == .processing || record.status == .recorded {
+            let url = record.audioName.flatMap(paths.audioURL)
+            // Cut short before a quarter of a second was saved, with no words yet: nothing to play or retry.
+            let bytes = url.flatMap { try? FileManager.default.attributesOfItem(atPath: $0.path)[.size] as? Int } ?? 0
+            if record.text.isEmpty, record.rawText.isEmpty, bytes < 44 + 8000 { try delete(record); continue }
+            // A recording cut short never had its sizes written: put them right, so it plays and retries.
+            if let url { WAVRepair.repair(url) }
+            record.status = .failed; record.error = "Processing was interrupted. Retry the saved audio."; try save(record)
+            count += 1
+        }
+        return count
     }
     public func removeOrphanedAudio() throws {
         let referenced = Set(try all().compactMap(\.audioName))

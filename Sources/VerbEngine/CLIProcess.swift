@@ -68,7 +68,7 @@ final class CLIProcess: @unchecked Sendable {
         let data = drain(output.fileHandleForReading); buffer.append(data); totalBytes += data.count
         let diagnostics = drain(errors.fileHandleForReading); stderr.append(diagnostics)
         if stderr.count > 16000 { stderr = Data(stderr.suffix(16000)) }
-        guard totalBytes <= 4_000_000 else { stop(); throw VerbError("The CLI returned too much output. Your original transcript is safe.") }
+        guard totalBytes <= 4_000_000 else { stop(); throw VerbError("The CLI returned too much output.") }
     }
     private func frame() throws -> Data? {
         if framing == .lines {
@@ -77,7 +77,7 @@ final class CLIProcess: @unchecked Sendable {
         }
         guard let header = buffer.range(of: Data("\r\n\r\n".utf8)) else { return nil }
         let fields = String(decoding: buffer.prefix(upTo: header.lowerBound), as: UTF8.self).components(separatedBy: "\r\n")
-        guard let line = fields.first(where: { $0.lowercased().hasPrefix("content-length:") }), let length = Int(line.dropFirst(15).trimmingCharacters(in: .whitespaces)), (0...4_000_000).contains(length) else { throw VerbError("Invalid CLI protocol header.") }
+        guard let line = fields.first(where: { $0.lowercased().hasPrefix("content-length:") }), let length = Int(line.dropFirst(15).trimmingCharacters(in: .whitespaces)), (0...4_000_000).contains(length) else { throw VerbError("The CLI answered in a way Verb doesn’t understand. Update it, then refresh the models in Models.") }
         let start = header.upperBound
         guard buffer.count - start >= length else { return nil }
         let value = buffer.subdata(in: start..<(start + length)); buffer.removeSubrange(0..<(start + length)); return value
@@ -103,7 +103,11 @@ final class CLIProcess: @unchecked Sendable {
             if !process.isRunning { try pump(); break }
             try await Task.sleep(nanoseconds: 20_000_000)
         }
-        guard process.terminationStatus == 0 else { throw VerbError("The CLI failed (\(process.terminationStatus)). Check its login, model access and usage limits. " + errorText) }
+        guard process.terminationStatus == 0 else {
+            // Codex and Claude Code say why on standard output, as JSON, and nothing on standard error.
+            let reason = errorText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? HarnessPolicy.failureReason(output: String(decoding: buffer, as: UTF8.self)) ?? "" : errorText
+            throw VerbError("The CLI failed (\(process.terminationStatus)). Check its login, model access and usage limits. " + reason)
+        }
         // A child that exited without reading the whole request answered something else.
         let settle = Date().addingTimeInterval(0.5)
         while input.busy, Date() < settle { try await Task.sleep(nanoseconds: 20_000_000) }

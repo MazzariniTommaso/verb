@@ -46,6 +46,13 @@ public final class SpeechPCMReader {
         self.target = target; self.converter = converter
     }
 
+    /// Starts reading this many samples in, for a recording whose beginning is already written down.
+    public func skip(samples: Int) throws {
+        let frames = AVAudioFramePosition((Double(samples) * file.processingFormat.sampleRate / 16000).rounded())
+        guard frames < file.length else { atEnd = true; return }
+        file.framePosition = frames
+    }
+
     /// The next `seconds` of audio, or fewer at the end; empty once the recording is read.
     public func read(seconds: Double) throws -> [Float] {
         guard !atEnd else { return [] }

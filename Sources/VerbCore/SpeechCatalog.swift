@@ -12,7 +12,10 @@ public struct LocalSpeechModel: Identifiable, Sendable {
     public let repository: String
     public let revision: String
     public let files: [SpeechModelFile]
+    /// The languages it recognizes, as ISO codes.
+    public var languages: [String] = []
     public var downloadBytes: Int64 { files.reduce(0) { $0 + $1.bytes } }
+    public func recognizes(_ language: DictationLanguage) -> Bool { language == .auto || languages.contains(language.rawValue) }
 }
 public enum SpeechCatalog {
     public static let defaultID = "parakeet-v3"
@@ -21,14 +24,21 @@ public enum SpeechCatalog {
         return model
     }
     public static let models: [LocalSpeechModel] = [
-        LocalSpeechModel(id: "parakeet-v3", name: "Parakeet v3 · MLX", detail: "Fast multilingual dictation · Italian and English · 2.51 GB", repository: "mlx-community/parakeet-tdt-0.6b-v3", revision: "ed2b7e8c15f9aaa0b5772e2efb986255eaef7e15", files: [
+        LocalSpeechModel(id: "parakeet-v3", name: "Parakeet v3 · MLX", detail: "Fast multilingual dictation · 25 European languages · 2.51 GB", repository: "mlx-community/parakeet-tdt-0.6b-v3", revision: "ed2b7e8c15f9aaa0b5772e2efb986255eaef7e15", files: [
             SpeechModelFile(name: "config.json", bytes: 244093, sha256: nil),
             SpeechModelFile(name: "model.safetensors", bytes: 2508288736, sha256: "05e01c7f396c298cf7d23f61da7b504adeab698f0aaeafd9c82d198625464592"),
             SpeechModelFile(name: "tokenizer.model", bytes: 360916, sha256: "eacec2b0a77f336d4a2ca4a25a7047575d3c2b74de47e997f4c205126ed3135e"),
             SpeechModelFile(name: "tokenizer.vocab", bytes: 101024, sha256: nil),
             SpeechModelFile(name: "vocab.txt", bytes: 46772, sha256: nil)
-        ]),
-        LocalSpeechModel(id: "qwen3-asr-0.6b-4bit", name: "Qwen3 ASR 0.6B · MLX 4-bit", detail: "Compact multilingual model · language and vocabulary hints · 713 MB", repository: "mlx-community/Qwen3-ASR-0.6B-4bit", revision: "313d850181767edf09f00a9c289becca70e58cd0", files: [
+        ], languages: ["bg", "cs", "da", "de", "el", "en", "es", "et", "fi", "fr", "hr", "hu", "it", "lt", "lv", "mt", "nl", "pl", "pt", "ro", "ru", "sk", "sl", "sv", "uk"]),
+        LocalSpeechModel(id: "parakeet-ultra", name: "Parakeet Ultra · MLX", detail: "Parakeet v3 trained further · same 25 languages · half the size · 1.25 GB", repository: "selcukkubur/parakeet-ultra-mlx", revision: "b554592c50b2a48471add2daa3d46fa9f00fef5e", files: [
+            SpeechModelFile(name: "config.json", bytes: 244093, sha256: nil),
+            SpeechModelFile(name: "model.safetensors", bytes: 1254184462, sha256: "ee62d5a5f62f931b73ab000f07d864ee00b1e773205b1e666ff7990680c328b4"),
+            SpeechModelFile(name: "tokenizer.model", bytes: 360916, sha256: "eacec2b0a77f336d4a2ca4a25a7047575d3c2b74de47e997f4c205126ed3135e"),
+            SpeechModelFile(name: "tokenizer.vocab", bytes: 101024, sha256: nil),
+            SpeechModelFile(name: "vocab.txt", bytes: 46772, sha256: nil)
+        ], languages: ["bg", "cs", "da", "de", "el", "en", "es", "et", "fi", "fr", "hr", "hu", "it", "lt", "lv", "mt", "nl", "pl", "pt", "ro", "ru", "sk", "sl", "sv", "uk"]),
+        LocalSpeechModel(id: "qwen3-asr-0.6b-4bit", name: "Qwen3 ASR 0.6B · MLX 4-bit", detail: "Compact multilingual model · 30 languages · language and dictionary hints · 713 MB", repository: "mlx-community/Qwen3-ASR-0.6B-4bit", revision: "313d850181767edf09f00a9c289becca70e58cd0", files: [
             SpeechModelFile(name: "chat_template.json", bytes: 1161, sha256: nil),
             SpeechModelFile(name: "config.json", bytes: 7187, sha256: nil),
             SpeechModelFile(name: "generation_config.json", bytes: 142, sha256: nil),
@@ -38,6 +48,7 @@ public enum SpeechCatalog {
             SpeechModelFile(name: "preprocessor_config.json", bytes: 330, sha256: nil),
             SpeechModelFile(name: "tokenizer_config.json", bytes: 12487, sha256: nil),
             SpeechModelFile(name: "vocab.json", bytes: 2776833, sha256: nil)
-        ])
+        ], languages: ["ar", "cs", "da", "de", "el", "en", "es", "fa", "fi", "fil", "fr", "hi", "hu", "id", "it", "ja", "ko", "mk", "ms", "nl", "pl", "pt", "ro", "ru", "sv", "th",
+                       "tr", "vi", "yue", "zh"])
     ]
 }

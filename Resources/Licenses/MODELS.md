@@ -5,6 +5,7 @@
 Verb downloads the speech model you choose from Hugging Face, at a pinned revision. A build can also carry the weights inside the app, unchanged.
 
 - **Parakeet TDT 0.6B v3**, by NVIDIA, converted to MLX by the MLX community. Source: https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3 ; conversion: https://huggingface.co/mlx-community/parakeet-tdt-0.6b-v3 at revision `ed2b7e8c15f9aaa0b5772e2efb986255eaef7e15`. Licensed CC BY 4.0: https://creativecommons.org/licenses/by/4.0/ . The MLX conversion is an upstream modification; Verb uses those weights unchanged and casts them to bfloat16 in memory. Attribution does not imply endorsement.
+- **Parakeet Ultra**, by Moondream, converted to the MLX layout by Selçuk Kubur. Source: https://huggingface.co/moondream/parakeet-ultra ; conversion: https://huggingface.co/selcukkubur/parakeet-ultra-mlx at revision `b554592c50b2a48471add2daa3d46fa9f00fef5e`. Licensed CC BY 4.0: https://creativecommons.org/licenses/by/4.0/ . The conversion renames the weights and changes their memory layout, at bfloat16; Verb uses them unchanged. Attribution does not imply endorsement.
 - **Qwen3-ASR 0.6B**, by the Qwen team, MLX 4-bit conversion by the MLX community. Original: https://huggingface.co/Qwen/Qwen3-ASR-0.6B ; conversion: https://huggingface.co/mlx-community/Qwen3-ASR-0.6B-4bit at revision `313d850181767edf09f00a9c289becca70e58cd0`. Apache 2.0. Verb uses the upstream quantized weights unchanged; MLX Audio Swift generates a compatible tokenizer JSON from the supplied vocabulary assets.
 
 ## Runtime

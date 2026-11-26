@@ -1,5 +1,15 @@
 import Foundation
 
+/// The editors and terminals Verb knows, by bundle identifier. In them a dictation keeps its
+/// casing, and a terminal takes the words as said unless you choose another style for it.
+public enum CodeBundles {
+    public static let terminals: Set<String> = ["com.apple.Terminal", "com.googlecode.iterm2", "dev.warp.Warp-Stable", "com.mitchellh.ghostty", "net.kovidgoyal.kitty",
+                                                "io.alacritty", "org.alacritty", "com.github.wez.wezterm", "co.zeit.hyper"]
+    public static let editors: Set<String> = ["com.microsoft.VSCode", "com.microsoft.VSCodeInsiders", "com.todesktop.230313mzl4w4u92", "com.exafunction.windsurf", "com.apple.dt.Xcode",
+                                              "com.sublimetext.4", "com.sublimetext.3", "dev.zed.Zed", "dev.zed.Zed-Preview", "com.panic.Nova", "com.barebones.bbedit", "com.google.android.studio"]
+    public static func isCode(_ bundleID: String) -> Bool { terminals.contains(bundleID) || editors.contains(bundleID) || bundleID.hasPrefix("com.jetbrains.") }
+}
+
 /// Code said out loud, for editors and terminals. "user id" becomes `userId` when the project
 /// has it, "camel case user id" becomes `userId` anyway, "app model punto swift" becomes
 /// AppModel.swift, and "tag index dot ts" becomes @index.ts, or @src/index.ts in a terminal,

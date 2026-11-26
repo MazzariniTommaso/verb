@@ -13,6 +13,13 @@ import VerbEngine
           verify-endpoint BASE_URL AUDIO                        check the hosted-endpoint client against Tests/Fixtures/provider_fixture.py
           harness-list PROVIDER [EXECUTABLE]                    list the models a subscription CLI offers
           harness-edit PROVIDER MODEL TEXT [EXECUTABLE]         clean up text through a subscription CLI
+          speech-install REPOSITORY[@REVISION] FOLDER           install any MLX speech model from Hugging Face
+          speech-transcribe FOLDER AUDIO [LANGUAGE]             transcribe a recording with an installed model
+          speech-bench MANIFEST MODELS RESULTS [OPTIONS]        run speech models over a benchmark set
+          speech-bench-report RESULTS... [OPTIONS]              summarize benchmark results and pick the models
+          microphone [DEVICE_UID|system] [SECONDS]              open a microphone as Verb does and check what comes through
+          ahead MODEL_ROOT AUDIO [MODEL_ID]                     write a recording down part by part, as while it records, and compare
+          ask TEXT                                              ask Verb's local writing model, as the command keys do with nothing selected
         PROVIDER is one of \(HarnessProvider.allCases.map(\.rawValue).joined(separator: ", ")).
         """
     static func main() async {
@@ -69,8 +76,23 @@ import VerbEngine
                 }
                 print("PASS: multipart audio, bearer auth, model fields, transcription JSON, chat JSON, 401/413/429/500 handling, redirect rejection"); return
             }
+            if args.count >= 4, args[1] == "speech-install" { try await SpeechBench.install(args[2], folder: args[3]); return }
+            if args.count >= 4, args[1] == "speech-transcribe" { try await SpeechBench.transcribe(folder: args[2], audio: args[3], language: args.count > 4 ? args[4] : nil); return }
+            if args.count > 1, args[1] == "speech-bench" { try await SpeechBench.run(Array(args.dropFirst(2))); return }
+            if args.count > 1, args[1] == "speech-bench-report" { try SpeechBench.report(Array(args.dropFirst(2))); return }
+            if args.count > 1, args[1] == "microphone" { try await MicrophoneCheck.run(Array(args.dropFirst(2))); return }
+            if args.count >= 4, args[1] == "ahead" { try await ahead(root: args[2], audio: args[3], variant: args.count > 4 ? args[4] : Settings().localModel); return }
+            if args.count >= 4, args[1] == "memory" { try await memory(root: args[2], audio: args[3], variant: args.count > 4 ? args[4] : Settings().localModel); return }
             if args.count >= 4, args[1] == "listen" { try await listen(root: args[2], audio: args[3], variant: args.count > 4 ? args[4] : Settings().localModel); return }
             guard args.count >= 3 else { print(usage); return }
+            if args[1] == "ask" {
+                let request = args[2], started = Date(), first = FirstPiece()
+                if case let intent = Assistant.intent(of: request), intent != .ask(request) { print("action: \(intent)"); return }
+                let answer = try await ModelClient().ask(system: Assistant.systemPrompt(personal: nil, place: nil, style: nil, hasContext: false), user: Assistant.userMessage(request: request, near: nil, screen: nil),
+                                                         settings: Settings(), key: "", partial: { _ in first.note() })
+                print(String(format: "first words after %.2f s · whole answer after %.2f s · %d pieces", first.at.map { $0.timeIntervalSince(started) } ?? 0, Date().timeIntervalSince(started), first.count))
+                print(answer); return
+            }
             if args[1] == "cleanup" {
                 let settings = Settings()
                 print(try await ModelClient().edit(text: args[2], style: .natural, vocabulary: [], settings: settings, key: "")); return
@@ -85,6 +107,50 @@ import VerbEngine
                 print(String(data: data, encoding: .utf8)!)
             } else { throw VerbError("Unknown command.") }
         } catch { fputs("\(error.localizedDescription)\n", stderr); exit(1) }
+    }
+
+    /// Writes a recording down whole, then as the app does while it records: every part of 28
+    /// seconds as soon as it is there, and the rest at the end. The two texts must be the same;
+    /// the time left at the end is what the wait after the keys come up becomes.
+    static func ahead(root: String, audio: String, variant: String) async throws {
+        let engine = LocalSpeech(root: URL(fileURLWithPath: root)), url = URL(fileURLWithPath: audio)
+        try await engine.prepare(variant)
+        var started = Date()
+        let whole = try await engine.transcribe(url: url, variant: variant, language: .auto, vocabulary: [])
+        let wholeSeconds = Date().timeIntervalSince(started)
+        let samples = try SpeechPCM.read(url)
+        var offset = 0, texts: [String] = [], detected: String?
+        started = Date()
+        while samples.count - offset > 16000 * 28 {
+            guard let first = SpeechChunking.ranges(samples: Array(samples[offset..<min(samples.count, offset + 16000 * 28 + 1)]), sampleRate: 16000).first else { break }
+            let part = try await engine.decodePart(samples: Array(samples[offset..<(offset + first.upperBound)]), variant: variant, language: .auto, vocabulary: [])
+            texts.append(part.text); detected = part.language ?? detected; offset += first.upperBound
+        }
+        let duringSeconds = Date().timeIntervalSince(started)
+        started = Date()
+        let rest = try await engine.transcribe(url: url, variant: variant, language: .auto, vocabulary: [], from: offset, prior: texts, priorLanguage: detected)
+        let endSeconds = Date().timeIntervalSince(started)
+        let same = rest.text == whole.text
+        print(String(format: "recording %.0f s · whole at the end %.2f s · parts while recording %.2f s · left at the end %.2f s · same text: %@", Double(samples.count) / 16000, wholeSeconds, duringSeconds, endSeconds, same ? "yes" : "NO"))
+        if !same { print("whole: \(whole.text)\nahead: \(rest.text)"); exit(1) }
+    }
+
+    /// Loads a speech model, writes a recording down, then sends the model away as the app does
+    /// when idle, saying what memory each step leaves: MLX's own counts and the process's footprint.
+    static func memory(root: String, audio: String, variant: String) async throws {
+        let engine = LocalSpeech(root: URL(fileURLWithPath: root))
+        func line(_ step: String) { print("\(step): mlx active \(SpeechMemory.active / 1_048_576) MB · cache \(SpeechMemory.cache / 1_048_576) MB · footprint \(footprint() / 1_048_576) MB") }
+        line("start")
+        try await engine.prepare(variant); line("loaded")
+        _ = try await engine.transcribe(url: URL(fileURLWithPath: audio), variant: variant, language: .auto, vocabulary: []); line("transcribed")
+        await engine.unload(); line("unloaded")
+        try await Task.sleep(nanoseconds: 2_000_000_000); line("2 s later")
+    }
+    /// The process's physical footprint, as Activity Monitor's Memory column shows it.
+    static func footprint() -> Int64 {
+        var info = task_vm_info_data_t(), count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<natural_t>.size)
+        let result = withUnsafeMutablePointer(to: &info) { $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) { task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count) } }
+        return result == KERN_SUCCESS ? Int64(info.phys_footprint) : 0
     }
 
     /// Plays a recording through the same listening path the app uses, without a microphone:
@@ -130,4 +196,12 @@ import VerbEngine
         print("Recording \(seconds(from)) to \(seconds(recordingTo ?? samples.count)) · heard “\(heard)”")
         print("Dictation: “\(kept)”")
     }
+}
+
+/// When the first piece of a streamed answer came, and how many came.
+private final class FirstPiece: @unchecked Sendable {
+    private let lock = NSLock()
+    private(set) var at: Date?
+    private(set) var count = 0
+    func note() { lock.lock(); if at == nil { at = Date() }; count += 1; lock.unlock() }
 }

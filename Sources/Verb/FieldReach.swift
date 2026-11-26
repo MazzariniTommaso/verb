@@ -2,11 +2,15 @@ import AppKit
 import ApplicationServices
 
 /// Chromium browsers and Electron apps (Chrome, Edge, Brave, Arc, VS Code, Slack, Notion,
-/// Discord, Claude, Obsidian…) build their accessibility only when asked. Verb asks, once per
-/// app, with AXManualAccessibility: the attribute Electron made for this, which leaves window
-/// management alone, unlike AXEnhancedUserInterface.
+/// Discord, Claude, Obsidian…) build their accessibility only when asked, and it costs them
+/// some work. Verb asks, once per app, with AXManualAccessibility: the attribute Electron made
+/// for this, which leaves window management alone, unlike AXEnhancedUserInterface. It asks the
+/// apps you dictate into as they come to the front, and any other when a dictation begins there.
 @MainActor enum FieldReach {
     private static var woken = Set<pid_t>()
+    private static var wokenAt: [pid_t: Date] = [:]
+    /// Asked a moment ago: its text may still be on its way, so the field is asked again at paste time.
+    static func recentlyWoken(_ pid: pid_t) -> Bool { Date().timeIntervalSince(wokenAt[pid] ?? .distantPast) < 3 }
     /// Editors that turn on their screen-reader mode when accessibility is on, which changes how
     /// they behave: they are left alone, and Verb follows what is typed there instead.
     static let leftAlone: Set<String> = ["com.microsoft.VSCode", "com.microsoft.VSCodeInsiders", "com.todesktop.230313mzl4w4u92", "com.exafunction.windsurf", "com.vscodium"]
@@ -20,6 +24,6 @@ import ApplicationServices
         AXUIElementSetMessagingTimeout(app, 0.3)
         // Asked again later when the request couldn't be made at all, as before Accessibility is allowed.
         let result = AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
-        if result != .apiDisabled && result != .cannotComplete { woken.insert(pid) }
+        if result != .apiDisabled && result != .cannotComplete { woken.insert(pid); wokenAt[pid] = Date() }
     }
 }

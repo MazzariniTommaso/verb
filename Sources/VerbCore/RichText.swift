@@ -6,7 +6,13 @@ import Foundation
 public enum RichText {
     /// Whether the text uses any of the Markdown Verb formats.
     public static func hasFormatting(_ text: String) -> Bool {
-        text.range(of: #"\*\*[^*\n]+\*\*|(?<![\w*])\*[^*\s][^*\n]*\*(?![\w*])|(?<![\w`])`[^`\n]+`|\[[^\]\n]+\]\([^)\s]+\)|(?m)^\s*(?:[-*•]|\d+[.)])\s+\S"#, options: .regularExpression) != nil
+        text.range(of: #"\*\*[^*\n]+\*\*|(?<![\w*])\*[^*\s][^*\n]*\*(?![\w*])|(?<![\w`])`[^`\n]+`|\[[^\]\n]+\]\([^)\s]+\)|(?m)^\s*(?:[-*•]|\d+[.)])\s+\S|(?m)^#{1,3}\s+\S"#, options: .regularExpression) != nil
+    }
+    /// A heading line, "## Decisions", without its marks.
+    private static func heading(_ line: String) -> String? {
+        guard let match = line.range(of: #"^#{1,3}\s+"#, options: .regularExpression) else { return nil }
+        let text = line[match.upperBound...].trimmingCharacters(in: .whitespaces)
+        return text.isEmpty ? nil : text
     }
 
     /// The Markdown as HTML: paragraphs and line breaks, bold, italic, code, links and lists.
@@ -16,6 +22,8 @@ public enum RichText {
         func closeList() { if !list.isEmpty { let tag = ordered ? "ol" : "ul"; blocks.append("<\(tag)>" + list.map { "<li>\($0)</li>" }.joined() + "</\(tag)>"); list = [] } }
         for line in text.components(separatedBy: "\n") {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
+            // A heading is a bold line of its own: every app that takes formatting shows bold.
+            if let title = heading(trimmed) { closeParagraph(); closeList(); blocks.append("<p><strong>" + inline(title) + "</strong></p>"); continue }
             if let item = listItem(trimmed) {
                 closeParagraph()
                 if !list.isEmpty && ordered != item.ordered { closeList() }
@@ -35,6 +43,7 @@ public enum RichText {
     public static func plain(fromMarkdown text: String) -> String {
         text.components(separatedBy: "\n").map { line -> String in
             let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if let title = heading(trimmed) { return stripped(title) }
             guard let item = listItem(trimmed) else { return stripped(line) }
             return (item.ordered ? item.marker + " " : "• ") + stripped(item.text)
         }.joined(separator: "\n")

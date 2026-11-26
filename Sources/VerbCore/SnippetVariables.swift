@@ -2,7 +2,8 @@ import Foundation
 
 /// The parts of a snippet filled in when it is said: today's date, the time, the day, what is
 /// on the clipboard, and where the cursor stops. Each has an Italian and an English name, and
-/// the name sets the language: {data} is "26 settembre 2026", {date} is "September 26, 2026".
+/// the name sets the language: {data} is "26 settembre 2026", {date} is "26 September 2026",
+/// in British English as everywhere else in Verb.
 public enum SnippetVariables {
     /// Stands in for {cursore} until the text is in place. A private-use character, so no
     /// dictation or model ever writes it.
@@ -26,11 +27,11 @@ public enum SnippetVariables {
             let value: String
             switch ns.substring(with: match.range(at: 1)).lowercased() {
             case "data": value = format(now, "d MMMM yyyy", "it_IT")
-            case "date": value = format(now, "MMMM d, yyyy", "en_US")
+            case "date": value = format(now, "d MMMM yyyy", "en_GB")
             case "ora": value = format(now, "HH:mm", "it_IT")
-            case "time": value = format(now, "h:mm a", "en_US")
+            case "time": value = format(now, "HH:mm", "en_GB")
             case "giorno": value = format(now, "EEEE", "it_IT")
-            case "weekday": value = format(now, "EEEE", "en_US")
+            case "weekday": value = format(now, "EEEE", "en_GB")
             case "appunti", "clipboard":
                 if copied == nil { copied = .some(clipboard()) }
                 value = (copied ?? nil) ?? ""

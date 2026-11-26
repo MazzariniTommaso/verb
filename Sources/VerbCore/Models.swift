@@ -9,15 +9,44 @@ public enum SpeechProvider: String, Codable, CaseIterable, Identifiable, Sendabl
 public enum CleanupProvider: String, Codable, CaseIterable, Identifiable, Sendable {
     case local, harness, endpoint, off
     public var id: String { rawValue }
+    /// How long a dictation waits for the writing model before it goes in as said: a model on
+    /// this Mac answers in seconds, a server in a few more, a subscription CLI in up to half a
+    /// minute. Longer dictations get longer.
+    public func deadline(words: Int) -> Double {
+        switch self {
+        case .local: return 12 + Double(words) * 0.05
+        case .endpoint: return 15 + Double(words) * 0.05
+        case .harness: return 45 + Double(words) * 0.1
+        case .off: return 0
+        }
+    }
     public var title: String { switch self { case .local: return "Local · Ollama"; case .harness: return "My subscriptions · CLI"; case .endpoint: return "Hosted / custom server"; case .off: return "No AI cleanup" } }
 }
+/// How much text one voice edit or transform takes, and the room the writing model is given for
+/// its answer, which can be longer than the text, as a translation is.
+public enum RewriteBudget {
+    /// The most words one rewrite takes. A model on this Mac holds its whole context in memory,
+    /// so it takes fewer than a server or a subscription.
+    public static func maxWords(_ provider: CleanupProvider) -> Int { provider == .local ? 3000 : 12000 }
+    /// Tokens for the answer: about two and a half a word, never fewer than a short answer needs.
+    public static func outputTokens(words: Int) -> Int { min(32_768, max(2048, words * 5 / 2)) }
+    /// The local model's context: the usual size, or a larger one for a long text. Ollama loads the
+    /// model again when this changes, so there are just two sizes.
+    public static func localContext(words: Int) -> Int { words * 4 + 1024 <= 8192 ? 8192 : 16384 }
+}
+
+/// The language you speak: detected, or one of those the speech models know. Raw values are
+/// ISO codes.
 public enum DictationLanguage: String, Codable, CaseIterable, Identifiable, Sendable {
-    case auto, it, en
+    case auto, it, en, es, fr, de, pt, nl, pl, ru, uk, cs, sk, sl, hr, bg, ro, hu, el, sv, da, fi, et, lv, lt, mt
+    case ar, fa, hi, ja, ko, ms, th, tr, vi, zh, cantonese = "yue", filipino = "fil", indonesian = "id", macedonian = "mk"
     public var id: String { rawValue }
-    public var title: String { switch self { case .auto: return "Detect automatically"; case .it: return "Italiano"; case .en: return "English" } }
+    public var title: String { self == .auto ? "Detect automatically" : Locale(identifier: "en").localizedString(forLanguageCode: rawValue) ?? rawValue }
 }
 public enum WritingStyle: String, Codable, CaseIterable, Identifiable, Sendable {
-    case natural, casual, formal, verbatim
+    /// `custom` is an app's own: the words come from what you wrote for it. `lowercase` is the
+    /// way people write to friends, and needs no writing model.
+    case natural, casual, formal, verbatim, custom, lowercase
     public var id: String { rawValue }
     public var title: String { rawValue.capitalized }
     public var detail: String {
@@ -26,8 +55,14 @@ public enum WritingStyle: String, Codable, CaseIterable, Identifiable, Sendable 
         case .casual: return "Conversational messages, with lighter punctuation."
         case .formal: return "Careful grammar and complete sentences. Preserve your meaning."
         case .verbatim: return "Keep the speech engine's wording. Skip AI rewriting."
+        case .custom: return "Follow the user's own description of how to write here."
+        case .lowercase: return "Small letters and light punctuation, as in a chat with friends."
         }
     }
+    /// The styles every app can have; `custom` needs words written for one app.
+    public static let standard: [WritingStyle] = [.natural, .casual, .lowercase, .formal, .verbatim]
+    /// A style that reshapes every dictation, so the writing model is asked even for a short one.
+    public var reshapes: Bool { [.casual, .formal, .custom].contains(self) }
 }
 public enum InterfaceLanguage: String, Codable, CaseIterable, Identifiable, Sendable {
     case english = "en", italian = "it"
@@ -91,19 +126,31 @@ public enum CleanupPolicy: String, Codable, CaseIterable, Identifiable, Sendable
     /// Never: the recognized words, the dictionary and the quick rules only.
     case never
     public var id: String { rawValue }
+    /// Whether a dictation goes to the writing model. Under When needed, an app with a style
+    /// of its own that reshapes the words is refined every time, or its style would show only
+    /// in long or corrected dictations. Never means never.
+    public func usesModel(wordsCallForIt: Bool, appStyle: WritingStyle?) -> Bool {
+        switch self {
+        case .always: return true
+        case .whenNeeded: return wordsCallForIt || appStyle?.reshapes == true
+        case .never: return false
+        }
+    }
 }
 /// How the overlay looks while Verb records and works.
 public enum OverlayStyle: String, Codable, CaseIterable, Identifiable, Sendable {
-    /// The full capsule: what is happening, how to finish, the ink stroke and a stop button.
+    /// The full capsule: the red dot, the voice, the time, the key to finish and a stop button.
     case classic
-    /// A small pill: the red dot and the ink stroke.
+    /// A small pill: the red dot and the voice.
     case pill
-    /// The ink stroke alone, with a red nib where the new ink appears.
+    /// The voice alone, its dots in the accent colour; called Voice in the interface.
     case ink
-    /// One dot that breathes with your voice.
+    /// One circle with the voice inside it, the smallest.
     case dot
-    /// A slim bar with the time and the stroke.
+    /// A slim bar with the red dot, the time and the voice.
     case bar
+    /// A black island at the notch: symbols beside it, words below it.
+    case notch
     public var id: String { rawValue }
 }
 public enum Retention: Int, Codable, CaseIterable, Identifiable, Sendable {
@@ -111,7 +158,8 @@ public enum Retention: Int, Codable, CaseIterable, Identifiable, Sendable {
     public var id: Int { rawValue }
     public var title: String { switch self { case .none: return "Don't keep history"; case .day: return "24 hours"; case .week: return "7 days"; case .month: return "30 days"; case .forever: return "Until I delete it" } }
 }
-public enum CaptureMode: String, Codable, Sendable { case dictation, command }
+/// `command` edits the selection; `ask` is a request made with nothing selected.
+public enum CaptureMode: String, Codable, Sendable { case dictation, command, ask }
 public enum SessionStatus: String, Codable, Sendable { case recorded, processing, completed, failed, cancelled }
 
 /// Modifier keys, as Verb stores them. The app maps them to the Mac's own flags.
@@ -143,7 +191,9 @@ public struct KeyBinding: Codable, Hashable, Sendable {
 
     public static let fn = KeyBinding(modifiers: [.function], label: "fn")
     public static let controlOption = KeyBinding(modifiers: [.control, .option], label: "⌃ ⌥")
+    public static let optionCommand = KeyBinding(modifiers: [.option, .command], label: "⌥ ⌘")
     public static let shiftCommandC = KeyBinding(modifiers: [.shift, .command], keyCode: 8, label: "⇧ ⌘ C")
+    public static let controlCommandC = KeyBinding(modifiers: [.control, .command], keyCode: 8, label: "⌃ ⌘ C")
     public static let controlCommandV = KeyBinding(modifiers: [.control, .command], keyCode: 9, label: "⌃ ⌘ V")
     public static let controlOptionN = KeyBinding(modifiers: [.control, .option], keyCode: 45, label: "⌃ ⌥ N")
 
@@ -182,11 +232,29 @@ public struct KeyBinding: Codable, Hashable, Sendable {
         if modifiers.contains(.function) { return .functionWithKey }
         if modifiers.isEmpty || modifiers == [.shift] { return Self.functionKeys.contains(keyCode) ? nil : .needsModifier }
         if hold, keyCode == 49 { return .spaceIsHandsFree }
-        // ⌘ with A S Z X C V Q W H M, Tab, Space; ⌃ Space switches the input source.
+        // ⌘ with A S Z X C V Q W H M, Tab, Space; ⌃ Space switches the input source; ⌃⌘ with F,
+        // Q and Space are full screen, the lock screen and emoji in every app.
         if modifiers == [.command], [0, 1, 6, 7, 8, 9, 12, 13, 4, 46, 48, 49].contains(keyCode) { return .reserved }
         if modifiers == [.control], keyCode == 49 { return .reserved }
+        if modifiers == [.control, .command], [3, 12, 49].contains(keyCode) { return .reserved }
         return nil
     }
+    /// Well-known apps that use these keys for something of their own. Verb's keys work in
+    /// every app, so choosing them takes them from those apps.
+    public var knownUsers: [String] {
+        guard let keyCode else { return [] }
+        let known: [(KeyModifiers, UInt32, [String])] = [
+            ([.shift, .command], 8, ["Chrome", "Finder", "TextEdit", "Xcode"]),
+            ([.control, .command], 9, ["Word", "Excel"]),
+            ([.option, .command], 9, ["Finder"]),
+            ([.shift, .option, .command], 9, ["Mail", "Notes", "Pages"]),
+            ([.option, .command], 8, ["Pages", "Safari"]),
+            ([.control, .command], 2, ["macOS"]),
+        ]
+        return known.first { $0.0 == modifiers && $0.1 == keyCode }?.2 ?? []
+    }
+    /// VoiceOver's own keys: held, or with a key, they are its commands.
+    public var usesVoiceOverKeys: Bool { modifiers.isSuperset(of: [.control, .option]) }
 }
 
 /// The keys for Verb's actions. Any of them can be left without keys: choosing keys that
@@ -196,14 +264,19 @@ public struct KeyBindings: Codable, Equatable, Sendable {
     public var dictation: KeyBinding? = .fn
     /// Held, with text selected, to say how to change it.
     public var voiceEdit: KeyBinding? = .controlOption
+    /// Held to ask a question: the answer comes in the overlay's box.
+    public var ask: KeyBinding? = .optionCommand
     /// Puts the last dictation on the clipboard.
-    public var copyLast: KeyBinding? = .shiftCommandC
+    public var copyLast: KeyBinding? = .controlCommandC
     /// Pastes the last dictation where the cursor is.
     public var pasteLast: KeyBinding? = .controlCommandV
     /// Opens and closes the notepad.
     public var notepad: KeyBinding? = .controlOptionN
+    /// Pressed once to start a hands-free dictation and once more to finish it, for anyone who
+    /// can't hold keys down. None until chosen.
+    public var handsFree: KeyBinding?
     public init() {}
-    private enum CodingKeys: String, CodingKey { case dictation, voiceEdit, copyLast, pasteLast, notepad }
+    private enum CodingKeys: String, CodingKey { case dictation, voiceEdit, ask, copyLast, pasteLast, notepad, handsFree }
     // A missing entry gets its standard keys; one left empty on purpose stays empty.
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -211,23 +284,25 @@ public struct KeyBindings: Codable, Equatable, Sendable {
             guard values.contains(key) else { return standard }
             return try values.decodeNil(forKey: key) ? nil : values.decode(KeyBinding.self, forKey: key)
         }
-        dictation = try read(.dictation, .fn); voiceEdit = try read(.voiceEdit, .controlOption)
-        copyLast = try read(.copyLast, .shiftCommandC); pasteLast = try read(.pasteLast, .controlCommandV)
+        dictation = try read(.dictation, .fn); voiceEdit = try read(.voiceEdit, .controlOption); ask = try read(.ask, .optionCommand)
+        copyLast = try read(.copyLast, .controlCommandC); pasteLast = try read(.pasteLast, .controlCommandV)
         notepad = try read(.notepad, .controlOptionN)
+        handsFree = try values.decodeIfPresent(KeyBinding.self, forKey: .handsFree)
     }
     public func encode(to encoder: Encoder) throws {
         var values = encoder.container(keyedBy: CodingKeys.self)
-        try values.encode(dictation, forKey: .dictation); try values.encode(voiceEdit, forKey: .voiceEdit)
+        try values.encode(dictation, forKey: .dictation); try values.encode(voiceEdit, forKey: .voiceEdit); try values.encode(ask, forKey: .ask)
         try values.encode(copyLast, forKey: .copyLast); try values.encode(pasteLast, forKey: .pasteLast)
         try values.encode(notepad, forKey: .notepad)
+        try values.encodeIfPresent(handsFree, forKey: .handsFree)
     }
 
     public subscript(target: KeyTarget) -> KeyBinding? {
         get {
-            switch target { case .dictation: return dictation; case .voiceEdit: return voiceEdit; case .copyLast: return copyLast; case .pasteLast: return pasteLast; case .notepad: return notepad; case .transform: return nil }
+            switch target { case .dictation: return dictation; case .voiceEdit: return voiceEdit; case .ask: return ask; case .copyLast: return copyLast; case .pasteLast: return pasteLast; case .notepad: return notepad; case .handsFree: return handsFree; case .transform: return nil }
         }
         set {
-            switch target { case .dictation: dictation = newValue; case .voiceEdit: voiceEdit = newValue; case .copyLast: copyLast = newValue; case .pasteLast: pasteLast = newValue; case .notepad: notepad = newValue; case .transform: break }
+            switch target { case .dictation: dictation = newValue; case .voiceEdit: voiceEdit = newValue; case .ask: ask = newValue; case .copyLast: copyLast = newValue; case .pasteLast: pasteLast = newValue; case .notepad: notepad = newValue; case .handsFree: handsFree = newValue; case .transform: break }
         }
     }
     /// Who has these keys now, if anyone.
@@ -249,11 +324,11 @@ public struct KeyBindings: Codable, Equatable, Sendable {
 
 /// Something that can have keys: one of Verb's actions, or a transform.
 public enum KeyTarget: Hashable, Sendable {
-    case dictation, voiceEdit, copyLast, pasteLast, notepad
+    case dictation, voiceEdit, ask, copyLast, pasteLast, notepad, handsFree
     case transform(UUID)
-    public static let actions: [KeyTarget] = [.dictation, .voiceEdit, .copyLast, .pasteLast, .notepad]
+    public static let actions: [KeyTarget] = [.dictation, .handsFree, .voiceEdit, .ask, .copyLast, .pasteLast, .notepad]
     /// Held for as long as it lasts, so modifiers alone can be its keys.
-    public var hold: Bool { self == .dictation || self == .voiceEdit }
+    public var hold: Bool { self == .dictation || self == .voiceEdit || self == .ask }
 }
 
 /// Totals over every dictation. They are kept apart from History, so its clean-ups don't
@@ -354,8 +429,19 @@ public struct Settings: Codable, Equatable, Sendable {
     public var speechModel = "whisper-large-v3-turbo"
     public var cleanupEndpoint = "https://api.groq.com/openai/v1/chat/completions"
     public var hostedCleanupModel = ""
+    /// The writing model in use, as one value: a model that failed rests until another is chosen.
+    public var writerIdentity: String { [cleanupProvider.rawValue, cleanupModel, hostedCleanupModel, cleanupEndpoint, harnessOptions.provider.rawValue, harnessOptions.model].joined(separator: "|") }
+    /// Whether the writing model runs on this Mac: Verb's own Ollama, or a server on this Mac.
+    /// Only then do the names read from the field go to it.
+    public var writingStaysOnMac: Bool { cleanupProvider == .local || (cleanupProvider == .endpoint && EndpointPolicy.isOnThisMac(cleanupEndpoint)) }
     public var allowRemoteProcessing = false
     public var style: WritingStyle = .natural
+    /// What you wrote for the apps whose style is Custom, by bundle identifier.
+    public var appPrompts: [String: String]?
+    public var stylePrompts: [String: String] {
+        get { appPrompts ?? [:] }
+        set { appPrompts = newValue.isEmpty ? nil : newValue }
+    }
     public var appStyles: [String: WritingStyle] = ["com.apple.MobileSMS": .casual, "net.whatsapp.WhatsApp": .casual, "com.tinyspeck.slackmacgap": .casual, "com.apple.mail": .formal, "com.microsoft.Outlook": .formal, "com.apple.Terminal": .verbatim, "com.googlecode.iterm2": .verbatim]
     public var retention: Retention = .month
     public var keepAudio = true
@@ -363,6 +449,10 @@ public struct Settings: Codable, Equatable, Sendable {
     public var soundFeedback = true
     public var microphoneID = ""
     public var onboardingComplete = false
+    /// Where the welcome was left, and the gestures already tried on its practice sheet: a
+    /// welcome interrupted by a quit carries on from there.
+    public var welcomeStep: Int?
+    public var welcomeTried: [Int]?
     // The groups below are optional on disk: a settings file without one keeps every other preference.
     public var harness: HarnessPreferences?
     public var harnessOptions: HarnessPreferences {
@@ -395,7 +485,7 @@ public struct Settings: Codable, Equatable, Sendable {
         get { overlay ?? .pill }
         set { overlay = newValue }
     }
-    /// Without it, the keys are fn, ⌃⌥, ⇧⌘C, ⌃⌘V and ⌃⌥N.
+    /// Without it, the keys are fn, ⌃⌥, ⌃⌘C, ⌃⌘V and ⌃⌥N.
     public var keys: KeyBindings?
     public var keyOptions: KeyBindings {
         get { keys ?? KeyBindings() }
@@ -443,11 +533,11 @@ public struct Settings: Codable, Equatable, Sendable {
         get { code ?? true }
         set { code = newValue }
     }
-    /// With the system microphone chosen, prefer the Mac's own to Bluetooth headphones, which
-    /// would switch to call quality.
+    /// With no microphone chosen, the Mac's own before Bluetooth headphones. Off unless asked:
+    /// headphones are closer to the mouth, though they play in call quality while you dictate.
     public var builtInMic: Bool?
     public var preferBuiltInMic: Bool {
-        get { builtInMic ?? true }
+        get { builtInMic ?? false }
         set { builtInMic = newValue }
     }
     /// Minutes without dictating before the models leave memory; 0 keeps them loaded.
@@ -456,8 +546,99 @@ public struct Settings: Codable, Equatable, Sendable {
         get { idle ?? 30 }
         set { idle = newValue }
     }
+    /// A style for each kind of place: emails, work chats, chats with friends, everything else.
+    /// An app or a site with a style of its own keeps it.
+    public var categories: [String: WritingStyle]?
+    public var categoryStyles: [AppCategory: WritingStyle] {
+        get { (categories ?? Self.standardCategories).reduce(into: [:]) { result, entry in if let kind = AppCategory(rawValue: entry.key) { result[kind] = entry.value } } }
+        set { categories = newValue.reduce(into: [:]) { $0[$1.key.rawValue] = $1.value } }
+    }
+    public static let standardCategories: [String: WritingStyle] = [AppCategory.email.rawValue: .formal, AppCategory.personal.rawValue: .casual]
+    /// About you, in your words: your name, your role, how you sign. Every rewrite and answer reads it.
+    public var instructions: String?
+    public var personalInstructions: String {
+        get { instructions ?? "" }
+        set { instructions = newValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? nil : String(newValue.prefix(1000)) }
+    }
+    /// Seconds of silence that finish a hands-free dictation started with the keys; 0 never.
+    public var silence: Int?
+    public var handsFreeSilence: Int {
+        get { silence ?? 0 }
+        set { silence = newValue }
+    }
+    /// With the notch style, the island stays at the notch between dictations: pointed at, it says
+    /// how to start, and a click on it dictates.
+    public var notchDrop: Bool?
+    public var notchAtRest: Bool {
+        get { notchDrop ?? true }
+        set { notchDrop = newValue }
+    }
+    /// The window's sidebar with its icons alone, as you left it. It changes only when you ask.
+    public var sidebarIcons: Bool?
+    public var sidebarCollapsed: Bool {
+        get { sidebarIcons ?? false }
+        set { sidebarIcons = newValue }
+    }
+    /// Offer to record a call when an app for calls starts using the microphone.
+    public var detectMeetings: Bool?
+    public var meetingDetection: Bool {
+        get { detectMeetings ?? true }
+        set { detectMeetings = newValue }
+    }
+    /// The kind of notes a meeting gets, and the kinds you described.
+    public var meetingKind: String?
+    public var meetingTemplate: String {
+        get { meetingKind ?? MeetingTemplate.general }
+        set { meetingKind = newValue }
+    }
+    public var meetingKinds: [MeetingTemplate]?
+    public var customMeetingTemplates: [MeetingTemplate] {
+        get { meetingKinds ?? [] }
+        set { meetingKinds = newValue.isEmpty ? nil : newValue }
+    }
+    /// A request with the command keys reads the text on screen, for a writing model on this Mac.
+    public var askScreen: Bool?
+    public var askReadsScreen: Bool {
+        get { askScreen ?? true }
+        set { askScreen = newValue }
+    }
+    /// Lists and bold from the writing model go in as formatted text where the app keeps formatting.
+    public var formatPaste: Bool?
+    public var formatForApp: Bool {
+        get { formatPaste ?? true }
+        set { formatPaste = newValue }
+    }
+    /// Hints and reminders of the first days, and your typing speed.
+    public var coaching: Coaching?
+    public var coachingState: Coaching {
+        get { coaching ?? Coaching() }
+        set { coaching = newValue }
+    }
     public init() {}
-    public func style(for bundleID: String) -> WritingStyle { appStyles[bundleID] ?? style }
+    /// The style for an app, or for the site it shows: its own if you chose one, Verbatim in a
+    /// terminal, where a new line would run a command, its kind's, and otherwise the default.
+    public func style(for bundleID: String, site: Site? = nil) -> WritingStyle { styleChoice(for: bundleID, site: site).style }
+    /// The style, whether it is the place's own or its kind's rather than the default, and the
+    /// key it is kept under when it is the place's own.
+    public func styleChoice(for bundleID: String, site: Site? = nil) -> (style: WritingStyle, own: Bool, key: String?) {
+        for key in [site?.styleKey, bundleID].compactMap({ $0 }) {
+            // Custom with nothing written for it gives way to what comes next.
+            if let own = appStyles[key], own != .custom || stylePrompt(forKey: key) != nil { return (own, true, key) }
+        }
+        if CodeBundles.terminals.contains(bundleID) { return (.verbatim, false, nil) }
+        if let kind = categoryStyles[Places.category(bundleID: bundleID, site: site)], kind != .custom { return (kind, true, nil) }
+        return (style == .custom ? .natural : style, false, nil)
+    }
+    /// What you wrote for the app or site whose style is Custom.
+    public func stylePrompt(for bundleID: String, site: Site? = nil) -> String? {
+        let choice = styleChoice(for: bundleID, site: site)
+        guard choice.style == .custom, let key = choice.key else { return nil }
+        return stylePrompt(forKey: key)
+    }
+    func stylePrompt(forKey key: String) -> String? {
+        guard appStyles[key] == .custom, let text = stylePrompts[key]?.trimmingCharacters(in: .whitespacesAndNewlines), !text.isEmpty else { return nil }
+        return String(text.prefix(1000))
+    }
 }
 
 public struct VocabularyEntry: Codable, Identifiable, Equatable, Sendable {

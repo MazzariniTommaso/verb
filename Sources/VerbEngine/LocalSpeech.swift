@@ -1,5 +1,6 @@
 import Foundation
 import CryptoKit
+import os
 import NaturalLanguage
 import MLX
 import MLXAudioCore
@@ -15,7 +16,9 @@ public struct SpeechResult: Sendable {
 
 /// Downloads one file with progress. After a dropped connection it carries on from where it
 /// stopped, a few times, instead of starting over; the caller still checks size and SHA-256.
-/// A session delegate, because the async download API reports no progress to a task delegate.
+/// With `resumeFile`, a download stopped or failed is kept there, to carry on from at the next
+/// try, after a quit too. A session delegate, because the async download API reports no
+/// progress to a task delegate.
 final class SpeechDownload: NSObject, URLSessionDownloadDelegate, @unchecked Sendable {
     /// Failures that may not happen again a moment later.
     private static let transient: Set<URLError.Code> = [.networkConnectionLost, .timedOut, .notConnectedToInternet, .cannotConnectToHost, .cannotFindHost, .dnsLookupFailed, .secureConnectionFailed]
@@ -23,31 +26,42 @@ final class SpeechDownload: NSObject, URLSessionDownloadDelegate, @unchecked Sen
     private let lock = NSLock()
     private var waiting: CheckedContinuation<(URL, URLResponse), Error>?, kept: URL?
     private init(report: @escaping @Sendable (Int64) -> Void) { self.report = report }
-    static func fetch(_ url: URL, configuration: URLSessionConfiguration, attempts: Int = 4, progress: @escaping @Sendable (Int64) -> Void) async throws -> (URL, HTTPURLResponse) {
+    static func fetch(_ url: URL, configuration: URLSessionConfiguration, attempts: Int = 4, resumeFile: URL? = nil, progress: @escaping @Sendable (Int64) -> Void) async throws -> (URL, HTTPURLResponse) {
         let download = SpeechDownload(report: progress)
         let session = URLSession(configuration: configuration, delegate: download, delegateQueue: nil)
         defer { session.invalidateAndCancel() }
-        var resumeData: Data?, attempt = 1
+        var resumeData = resumeFile.flatMap { try? Data(contentsOf: $0) }, attempt = 1, kept = resumeData != nil
         while true {
             do {
-                let (file, response) = try await download.run(resumeData.map { session.downloadTask(withResumeData: $0) } ?? session.downloadTask(with: url))
+                let (file, response) = try await download.run(resumeData.map { session.downloadTask(withResumeData: $0) } ?? session.downloadTask(with: url), resumeFile: resumeFile)
                 guard let http = response as? HTTPURLResponse else { try? FileManager.default.removeItem(at: file); throw URLError(.badServerResponse) }
                 // An offer to resume can lapse, such as a signed CDN link that expired: start over.
                 if resumeData != nil, !(200..<300).contains(http.statusCode), attempt < attempts { try? FileManager.default.removeItem(at: file); resumeData = nil; attempt += 1; continue }
+                if let resumeFile { try? FileManager.default.removeItem(at: resumeFile) }
                 return (file, http)
             } catch let error as URLError where attempt < attempts && !Task.isCancelled && transient.contains(error.code) {
                 resumeData = error.downloadTaskResumeData
                 try await Task.sleep(nanoseconds: UInt64(attempt) * 1_000_000_000); attempt += 1
+            } catch where kept && !Task.isCancelled {
+                // What was kept from an earlier try no longer resumes, as after a restart cleared it: start over.
+                kept = false; resumeData = nil
+                if let resumeFile { try? FileManager.default.removeItem(at: resumeFile) }
+            } catch {
+                if let resumeFile, let data = (error as? URLError)?.downloadTaskResumeData { try? data.write(to: resumeFile) }
+                throw error
             }
         }
     }
-    private func run(_ task: URLSessionDownloadTask) async throws -> (URL, URLResponse) {
+    private func run(_ task: URLSessionDownloadTask, resumeFile: URL?) async throws -> (URL, URLResponse) {
         try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<(URL, URLResponse), Error>) in
                 lock.lock(); waiting = continuation; kept = nil; lock.unlock()
                 task.resume()
             }
-        } onCancel: { task.cancel() }
+        } onCancel: {
+            // Stopped on purpose: what came so far waits for the next try.
+            if let resumeFile { task.cancel { data in if let data { try? data.write(to: resumeFile) } } } else { task.cancel() }
+        }
     }
     func urlSession(_ session: URLSession, downloadTask: URLSessionDownloadTask, didFinishDownloadingTo location: URL) {
         // The system deletes the file once this returns.
@@ -104,7 +118,7 @@ public actor LocalSpeech {
     }
     public func install(_ variant: String, progress: @escaping @Sendable (Double, String) -> Void) async throws {
         let model = try SpeechCatalog.model(variant)
-        if installed(variant) { try await prepare(variant); progress(1, "MLX model ready offline"); return }
+        if installed(variant) { try await prepare(variant); progress(1, "Speech model ready offline"); return }
         let folder = root.appendingPathComponent("MLX").appendingPathComponent(variant)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let config = URLSessionConfiguration.ephemeral
@@ -115,12 +129,12 @@ public actor LocalSpeech {
         for file in model.files {
             try Task.checkCancellation()
             let destination = folder.appendingPathComponent(file.name)
-            progress(Double(completed) / Double(model.downloadBytes) * 0.92, "Checking \(file.name)…")
+            progress(Double(completed) / Double(model.downloadBytes) * 0.92, "Checking what is already on this Mac…")
             if try verify(destination, file: file) { completed += file.bytes; continue }
             let startBytes = completed
             let url = URL(string: "https://huggingface.co/\(model.repository)/resolve/\(model.revision)/\(file.name)")!
-            let (temporary, response) = try await SpeechDownload.fetch(url, configuration: config) { received in
-                progress(min(0.92, Double(startBytes + received) / Double(model.downloadBytes) * 0.92), "Downloading \(model.name)…")
+            let (temporary, response) = try await SpeechDownload.fetch(url, configuration: config, resumeFile: folder.appendingPathComponent(file.name + ".resume")) { received in
+                progress(min(0.92, Double(startBytes + received) / Double(model.downloadBytes) * 0.92), "Downloading \(model.name.replacingOccurrences(of: " · MLX", with: ""))…")
             }
             defer { try? FileManager.default.removeItem(at: temporary) }
             try Task.checkCancellation()
@@ -131,11 +145,11 @@ public actor LocalSpeech {
             try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: destination.path)
             completed += file.bytes
         }
-        progress(0.94, "Preparing MLX on the Apple GPU…")
+        progress(0.94, "Preparing the speech model…")
         try await load(variant, folder: folder)
         try Task.checkCancellation()
         try (model.revision + "\n").write(to: folder.appendingPathComponent(Self.readyMarker), atomically: true, encoding: .utf8)
-        progress(1, "MLX model ready offline")
+        progress(1, "Speech model ready offline")
     }
     private func load(_ variant: String, folder: URL) async throws {
         while preparing || transcribing { try Task.checkCancellation(); try await Task.sleep(nanoseconds: 30_000_000) }
@@ -146,24 +160,38 @@ public actor LocalSpeech {
         Memory.clearCache()
         try Task.checkCancellation()
         switch variant {
-        case "parakeet-v3": pipeline = .parakeet(try ParakeetModel.fromDirectory(folder))
+        case "parakeet-v3", "parakeet-ultra": pipeline = .parakeet(try ParakeetModel.fromDirectory(folder))
         case "qwen3-asr-0.6b-4bit": pipeline = .qwen(try await Qwen3ASRModel.fromModelDirectory(folder))
         default: throw VerbError("Choose an MLX speech model in Models.")
         }
         try Task.checkCancellation(); loadedID = variant
+        Self.log.info("Speech model \(variant, privacy: .public) loaded")
     }
     public func prepare(_ variant: String) async throws {
         guard installed(variant) else { throw VerbError("Download the selected MLX speech model in Models to enable offline dictation.") }
         try await load(variant, folder: modelFolder(variant))
     }
-    public func unload() { guard !preparing, !transcribing else { return }; pipeline = nil; loadedID = nil; Memory.clearCache() }
+    /// Sends the model out of memory; false while it is loading or at work, to try again later.
+    @discardableResult public func unload() -> Bool {
+        guard !preparing, !transcribing else { return false }
+        if let loadedID { Self.log.info("Speech model \(loadedID, privacy: .public) unloaded") }
+        pipeline = nil; loadedID = nil; Memory.clearCache()
+        return true
+    }
+    /// Loads and unloads, in the system log, to tell why memory stays taken.
+    private static let log = Logger(subsystem: "app.verb.dictation", category: "speech")
 
-    public func transcribe(url: URL, variant: String, language: DictationLanguage, vocabulary: [VocabularyEntry]) async throws -> SpeechResult {
+    /// `progress` hears how much of the recording is written down, from 0 to 1, after each part.
+    /// `offset` skips the samples already written down while it recorded, whose text is `prior`.
+    public func transcribe(url: URL, variant: String, language: DictationLanguage, vocabulary: [VocabularyEntry], from offset: Int = 0, prior: [String] = [], priorLanguage: String? = nil, progress: (@Sendable (Double) -> Void)? = nil) async throws -> SpeechResult {
         let pipeline = try await claim(variant); defer { transcribing = false; Memory.clearCache() }
         let started = Date()
         // Five minutes at a time, cut near quiet points; the part after the last cut waits for the next five.
         let reader = try SpeechPCMReader(url)
-        var texts: [String] = [], detected: String?, carry: [Float] = [], heardAny = false
+        if offset > 0 { try reader.skip(samples: offset) }
+        var texts: [String] = prior, detected: String? = priorLanguage, carry: [Float] = [], heardAny = offset > 0
+        // Where the buffer starts in the recording, in samples.
+        var start = offset
         repeat {
             try Task.checkCancellation()
             let window = try reader.read(seconds: 300)
@@ -175,8 +203,11 @@ public actor LocalSpeech {
             for range in ready {
                 let result = try await decode(Array(buffer[range]), with: pipeline, language: language, vocabulary: vocabulary)
                 texts.append(TextRules.tidy(result.text)); detected = result.language ?? detected
+                if reader.duration > 0 { progress?(min(1, Double(start + range.upperBound) / 16000 / reader.duration)) }
             }
-            carry = reader.atEnd ? [] : Array(buffer[(ranges.last?.lowerBound ?? 0)...])
+            let kept = reader.atEnd ? buffer.count : (ranges.last?.lowerBound ?? 0)
+            carry = reader.atEnd ? [] : Array(buffer[kept...])
+            start += kept
         } while !reader.atEnd || !carry.isEmpty
         guard heardAny else { throw VerbError("This recording contains no audio.") }
         let text = TextRules.tidy(texts.joined(separator: " "))
@@ -187,6 +218,14 @@ public actor LocalSpeech {
         else if let detected, detected.lowercased().contains("english") { code = "en" }
         else { code = recognizer.dominantLanguage?.rawValue ?? "auto" }
         return SpeechResult(text: text, language: code, seconds: Date().timeIntervalSince(started))
+    }
+
+    /// One part of a recording still being made, as the final pass would cut and read it: its
+    /// text, tidied, and the language the model heard.
+    public func decodePart(samples: [Float], variant: String, language: DictationLanguage, vocabulary: [VocabularyEntry]) async throws -> (text: String, language: String?) {
+        let pipeline = try await claim(variant); defer { transcribing = false }
+        let result = try await decode(samples, with: pipeline, language: language, vocabulary: vocabulary)
+        return (TextRules.tidy(result.text), result.language)
     }
 
     /// Recognizes a few seconds already in memory, such as a possible "Ehi Verb". Nothing
@@ -217,7 +256,7 @@ public actor LocalSpeech {
             return result
         case .qwen(let model):
             var final: STTOutput?
-            let stream = model.generateStream(audio: audio, maxTokens: 512, temperature: 0, context: vocabulary.prefix(100).map(\.word).joined(separator: ", "), language: language == .auto ? nil : language == .it ? "Italian" : "English", chunkDuration: 30)
+            let stream = model.generateStream(audio: audio, maxTokens: 512, temperature: 0, context: vocabulary.prefix(100).map(\.word).joined(separator: ", "), language: language == .auto ? nil : SpeechArchitecture.qwen3ASR.hint(for: language.rawValue), chunkDuration: 30)
             for try await event in stream {
                 try Task.checkCancellation()
                 if case .result(let output) = event { final = output }

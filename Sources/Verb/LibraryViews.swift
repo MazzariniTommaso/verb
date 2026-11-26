@@ -8,25 +8,26 @@ struct DictionaryView: View {
     @Environment(\.lang) private var t
     @State private var editing: VocabularyEntry?
     @State private var search = ""
-    @State private var transferNote: String?
+    @State private var transferNote: TransferNote?
     private var words: [VocabularyEntry] {
         model.library.vocabulary.filter { search.isEmpty || $0.word.localizedCaseInsensitiveContains(search) || $0.heardAs.localizedCaseInsensitiveContains(search) }
     }
     var body: some View {
         PageScroll {
-            PageHeader(rubric: t.count(model.library.vocabulary.count, "word", "words", "parola", "parole"), title: t("Dictionary", "Dizionario"),
+            PageHeader(rubric: model.library.vocabulary.isEmpty ? nil : t.count(model.library.vocabulary.count, "word", "words", "parola", "parole"), title: t("Dictionary", "Dizionario"),
                        detail: t("Names, acronyms and terms that Verb should always spell your way.", "Nomi, sigle e termini che Verb deve scrivere sempre a modo tuo.")) {
                 HStack(spacing: Space.sm) {
                     LibraryTransferMenu(part: .vocabulary, note: $transferNote)
                     Button { editing = VocabularyEntry(word: "") } label: { Label(t("Add word", "Aggiungi parola"), systemImage: "plus") }.buttonStyle(VerbButtonStyle(kind: .primary))
                 }
             }
-            if let transferNote { StatusLabel(text: transferNote, symbol: "arrow.up.arrow.down", tone: .success) }
+            if let transferNote { TransferNoteView(note: transferNote) { self.transferNote = nil } }
             if !model.suggestions.isEmpty { SuggestionList(suggestions: model.suggestions.reversed()) }
             if model.library.vocabulary.isEmpty {
                 Card {
                     EmptyState(symbol: "character.book.closed", title: t("Teach Verb your words", "Insegna a Verb le tue parole"),
-                               detail: t("Add a name so it is recognised, or a frequent mishearing to fix automatically.", "Aggiungi un nome da riconoscere, o un errore frequente da correggere in automatico."))
+                               detail: t("Add a name so it is recognised, or a frequent mishearing to fix automatically.", "Aggiungi un nome da riconoscere, o un errore frequente da correggere in automatico."),
+                               action: (t("Add a word", "Aggiungi una parola"), { editing = VocabularyEntry(word: "") }))
                 }
             } else {
                 SearchField(text: $search, prompt: t("Find a word or correction", "Cerca una parola o una correzione"), clearLabel: t("Clear search", "Cancella la ricerca"))
@@ -67,7 +68,7 @@ struct WordEditor: View {
     @State private var error: String?
     private var saved: Bool { model.library.vocabulary.contains { $0.id == entry.id } }
     var body: some View {
-        EditorSheet(title: saved ? t("Edit word", "Modifica la parola") : t("Add a word", "Aggiungi una parola"), width: 460, error: error,
+        EditorSheet(title: saved ? t("Edit word", "Modifica la parola") : t("Add a word", "Aggiungi una parola"), width: 520, error: error,
                     save: t("Save", "Salva"), cancel: t("Cancel", "Annulla"), canSave: !word.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, onSave: save,
                     removal: saved ? SheetRemoval(label: t("Delete", "Elimina"), confirm: t("Delete word", "Elimina la parola"), question: t("Delete “\(entry.word)”?", "Eliminare “\(entry.word)”?"),
                                            detail: t("Verb stops recognising and correcting it. This can’t be undone.", "Verb smetterà di riconoscerla e correggerla. Non si può annullare.")) {
@@ -76,7 +77,7 @@ struct WordEditor: View {
             VerbField(label: t("Preferred spelling", "Grafia preferita"), text: $word)
             VerbField(label: t("Often heard as (optional)", "Spesso sentita come (facoltativo)"), text: $heardAs)
             Text(t("The spelling guides recognition. A correction replaces whole words and phrases with your spelling.", "La grafia guida il riconoscimento. Una correzione sostituisce parole e frasi intere con la tua grafia."))
-                .font(Typeface.text(TypeSize.footnote)).foregroundStyle(Palette.textSecondary).fixedSize(horizontal: false, vertical: true)
+                .font(Typeface.text(TypeSize.footnote)).foregroundStyle(Palette.textSecondary).fixedSize(horizontal: false, vertical: true).measure()
         }
         .onAppear { word = entry.word; heardAs = entry.heardAs }
     }
@@ -100,33 +101,43 @@ struct SnippetsView: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.lang) private var t
     @State private var editing: Snippet?
-    @State private var transferNote: String?
+    @State private var transferNote: TransferNote?
+    @State private var search = ""
+    private var snippets: [Snippet] {
+        model.library.snippets.filter { search.isEmpty || $0.trigger.localizedCaseInsensitiveContains(search) || $0.expansion.localizedCaseInsensitiveContains(search) }
+    }
     var body: some View {
         PageScroll {
-            PageHeader(rubric: t.count(model.library.snippets.count, "snippet", "snippets", "frase", "frasi"), title: t("Snippets", "Frasi pronte"),
+            PageHeader(rubric: model.library.snippets.isEmpty ? nil : t.count(model.library.snippets.count, "snippet", "snippets", "frase", "frasi"), title: t("Snippets", "Frasi pronte"),
                        detail: t("Say a short phrase and get the full text: a signature, an address, a reply you write often.", "Pronuncia una frase breve e ottieni il testo completo: una firma, un indirizzo, una risposta che scrivi spesso.")) {
                 HStack(spacing: Space.sm) {
                     LibraryTransferMenu(part: .snippets, note: $transferNote)
                     Button { editing = Snippet(trigger: "", expansion: "") } label: { Label(t("Add snippet", "Aggiungi frase"), systemImage: "plus") }.buttonStyle(VerbButtonStyle(kind: .primary))
                 }
             }
-            if let transferNote { StatusLabel(text: transferNote, symbol: "arrow.up.arrow.down", tone: .success) }
+            if let transferNote { TransferNoteView(note: transferNote) { self.transferNote = nil } }
             if model.library.snippets.isEmpty {
                 Card {
                     EmptyState(symbol: "text.quote", title: t("Your shortcuts, spoken", "Le tue scorciatoie, a voce"),
-                               detail: t("For example, say “my signature” to insert your full email signature.", "Per esempio, di’ “la mia firma” per inserire la firma completa delle email."))
+                               detail: t("For example, say “my signature” to insert your full email signature.", "Per esempio, di’ “la mia firma” per inserire la firma completa delle email."),
+                               action: (t("Add a snippet", "Aggiungi una frase pronta"), { editing = Snippet(trigger: "", expansion: "") }))
                 }
             } else {
+                SearchField(text: $search, prompt: t("Find a phrase or its text", "Cerca una frase o il suo testo"), clearLabel: t("Clear search", "Cancella la ricerca"))
+                if snippets.isEmpty {
+                    Card { EmptyState(symbol: "magnifyingglass", title: t("Nothing matches", "Nessun risultato"), detail: t("Try a shorter part of the phrase.", "Prova con una parte più breve della frase.")) }
+                } else {
                 RowList {
-                    ForEach(Array(model.library.snippets.enumerated()), id: \.element.id) { index, snippet in
+                    ForEach(Array(snippets.enumerated()), id: \.element.id) { index, snippet in
                         if index > 0 { Hairline().padding(.horizontal, Space.lg) }
-                        EditableRow(hint: t("Opens the snippet to edit or delete it", "Apre la frase per modificarla o eliminarla"), action: { editing = snippet }) {
+                        EditableRow(hint: t("Opens the snippet to edit or delete it", "Apre la frase pronta per modificarla o eliminarla"), action: { editing = snippet }) {
                             VStack(alignment: .leading, spacing: Space.xs + 2) {
                                 Text("“\(snippet.trigger)”").font(Typeface.display(TypeSize.reading)).foregroundStyle(Palette.textPrimary)
                                 Text(snippet.expansion).font(Typeface.text(TypeSize.footnote)).foregroundStyle(Palette.textSecondary).lineSpacing(2).lineLimit(3).multilineTextAlignment(.leading)
                             }
                         }
                     }
+                }
                 }
             }
         }
@@ -147,17 +158,17 @@ struct SnippetEditor: View {
     var body: some View {
         EditorSheet(title: saved ? t("Edit snippet", "Modifica la frase pronta") : t("New snippet", "Nuova frase pronta"), width: 520, error: error,
                     save: t("Save", "Salva"), cancel: t("Cancel", "Annulla"), canSave: !trigger.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, onSave: save,
-                    removal: saved ? SheetRemoval(label: t("Delete", "Elimina"), confirm: t("Delete snippet", "Elimina la frase"), question: t("Delete “\(entry.trigger)”?", "Eliminare “\(entry.trigger)”?"),
+                    removal: saved ? SheetRemoval(label: t("Delete", "Elimina"), confirm: t("Delete snippet", "Elimina la frase pronta"), question: t("Delete “\(entry.trigger)”?", "Eliminare “\(entry.trigger)”?"),
                                            detail: t("Its full text is removed from Verb. This can’t be undone.", "Il testo completo viene rimosso da Verb. Non si può annullare.")) {
                         model.library.snippets.removeAll { $0.id == entry.id }
-                    } : nil) {
+                    } : nil, multiline: true) {
             VerbField(label: t("When I say", "Quando dico"), text: $trigger)
             VStack(alignment: .leading, spacing: 6) {
                 FieldLabel(text: t("Write this", "Scrivi questo"))
                 VerbEditor(text: $expansion, minHeight: 190, label: t("Write this", "Scrivi questo"))
                 Text(t("Fill-ins: {date} {time} {weekday} {clipboard}, and {cursor} where the cursor should stop. {data} {ora} {giorno} {appunti} {cursore} give them in Italian.",
                        "Parti variabili: {data} {ora} {giorno} {appunti}, e {cursore} dove deve fermarsi il cursore. {date} {time} {weekday} {clipboard} {cursor} le scrivono in inglese."))
-                    .font(Typeface.text(TypeSize.footnote)).foregroundStyle(Palette.textSecondary).fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
+                    .font(Typeface.text(TypeSize.footnote)).foregroundStyle(Palette.textSecondary).fixedSize(horizontal: false, vertical: true).measure().textSelection(.enabled)
             }
             SwitchRow(title: t("Paste with formatting", "Incolla con la formattazione"),
                       detail: t("Write **bold**, *italic*, `code`, [a link](https://…) and lists starting with “- ”. Mail, Notes and web apps get the formatting; terminals and plain fields get clean text.",
@@ -184,7 +195,7 @@ struct LibraryTransferMenu: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.lang) private var t
     let part: LibraryPart
-    @Binding var note: String?
+    @Binding var note: TransferNote?
     var body: some View {
         Menu {
             Button(t("Import from a file…", "Importa da un file…")) { show(model.importPart(part)) }
@@ -197,10 +208,32 @@ struct LibraryTransferMenu: View {
         .menuStyle(.button).buttonStyle(VerbButtonStyle(kind: .secondary)).fixedSize()
         .help(t("CSV files open in Numbers and Excel. Importing only adds what is new.", "I file CSV si aprono con Numbers ed Excel. L’importazione aggiunge solo ciò che è nuovo."))
     }
-    private func show(_ text: String?) {
-        guard let text else { return }
-        note = text
-        Task { try? await Task.sleep(nanoseconds: 6_000_000_000); if note == text { note = nil } }
+    /// A count goes after a few seconds; a problem stays until it is closed.
+    private func show(_ outcome: TransferNote?) {
+        guard let outcome else { return }
+        note = outcome
+        guard !outcome.failed else { return }
+        Task { try? await Task.sleep(nanoseconds: 6_000_000_000); if note == outcome { note = nil } }
+    }
+}
+
+/// How an import or an export went.
+struct TransferNote: Equatable {
+    let text: String
+    var failed = false
+}
+
+/// An import or export's outcome: a count in the success tone, or a problem in the warning tone,
+/// selectable, with a way to close it.
+struct TransferNoteView: View {
+    @Environment(\.lang) private var t
+    let note: TransferNote
+    let close: () -> Void
+    var body: some View {
+        HStack(spacing: Space.sm) {
+            StatusLabel(text: note.text, symbol: note.failed ? "exclamationmark.triangle" : "arrow.up.arrow.down", tone: note.failed ? .warning : .success).textSelection(.enabled)
+            if note.failed { IconButton(symbol: "xmark", label: t("Close", "Chiudi"), action: close) }
+        }
     }
 }
 
@@ -208,28 +241,28 @@ enum LibraryPart { case vocabulary, snippets }
 
 extension AppModel {
     /// Saves the dictionary or the snippets to a file, and says so; nil when the panel is cancelled.
-    func exportPart(_ part: LibraryPart, csv: Bool) -> String? {
+    func exportPart(_ part: LibraryPart, csv: Bool) -> TransferNote? {
         let t = lang
-        let panel = NSSavePanel()
+        let panel = NSSavePanel(); panel.prompt = t("Export", "Esporta")
         panel.nameFieldStringValue = (part == .vocabulary ? t("Verb dictionary", "Dizionario Verb") : t("Verb snippets", "Frasi pronte Verb")) + (csv ? ".csv" : ".json")
         panel.allowedContentTypes = [csv ? .commaSeparatedText : .json]
         guard panel.runModal() == .OK, let url = panel.url else { return nil }
         do {
             let data: Data
             switch part {
-            case .vocabulary: data = csv ? Data(LibraryTransfer.csv(vocabulary: library.vocabulary).utf8) : try LibraryTransfer.json(vocabulary: library.vocabulary)
-            case .snippets: data = csv ? Data(LibraryTransfer.csv(snippets: library.snippets).utf8) : try LibraryTransfer.json(snippets: library.snippets)
+            case .vocabulary: data = csv ? Data(LibraryTransfer.csv(vocabulary: library.vocabulary, italian: t.isItalian).utf8) : try LibraryTransfer.json(vocabulary: library.vocabulary)
+            case .snippets: data = csv ? Data(LibraryTransfer.csv(snippets: library.snippets, italian: t.isItalian).utf8) : try LibraryTransfer.json(snippets: library.snippets)
             }
             try data.write(to: url, options: .atomic)
-            return part == .vocabulary ? t.count(library.vocabulary.count, "word exported", "words exported", "parola esportata", "parole esportate")
-                                       : t.count(library.snippets.count, "snippet exported", "snippets exported", "frase esportata", "frasi esportate")
-        } catch { return t.message(error.localizedDescription) }
+            return TransferNote(text: part == .vocabulary ? t.count(library.vocabulary.count, "word exported", "words exported", "parola esportata", "parole esportate")
+                                                          : t.count(library.snippets.count, "snippet exported", "snippets exported", "frase esportata", "frasi esportate"))
+        } catch { return TransferNote(text: t.message(error.localizedDescription), failed: true) }
     }
 
     /// Adds the words or snippets of a CSV or JSON file, and says how many were new.
-    func importPart(_ part: LibraryPart) -> String? {
+    func importPart(_ part: LibraryPart) -> TransferNote? {
         let t = lang
-        let panel = NSOpenPanel(); panel.allowedContentTypes = [.commaSeparatedText, .tabSeparatedText, .json, .plainText]; panel.allowsMultipleSelection = false
+        let panel = NSOpenPanel(); panel.prompt = t("Import", "Importa"); panel.allowedContentTypes = [.commaSeparatedText, .tabSeparatedText, .json, .plainText]; panel.allowsMultipleSelection = false
         guard panel.runModal() == .OK, let url = panel.url else { return nil }
         do {
             let data = try Data(contentsOf: url)
@@ -244,8 +277,8 @@ extension AppModel {
             if updated != library { library = updated }
             let added = part == .vocabulary ? t.count(outcome.added, "word added", "words added", "parola aggiunta", "parole aggiunte")
                                             : t.count(outcome.added, "snippet added", "snippets added", "frase aggiunta", "frasi aggiunte")
-            return outcome.skipped == 0 ? added : added + " · " + t.count(outcome.skipped, "already there or clashing", "already there or clashing", "già presente o in conflitto", "già presenti o in conflitto")
-        } catch { return t.message(error.localizedDescription) }
+            return TransferNote(text: outcome.skipped == 0 ? added : added + " · " + t.count(outcome.skipped, "already there or clashing", "already there or clashing", "già presente o in conflitto", "già presenti o in conflitto"))
+        } catch { return TransferNote(text: t.message(error.localizedDescription), failed: true) }
     }
 }
 
@@ -268,13 +301,17 @@ struct TransformsView: View {
             }
             Card {
                 SectionHeading(title: t("Edit with your voice", "Modifica a voce"))
-                Text(t("Select your text, hold \(t.keys(model.settings.keyOptions.voiceEdit)), then say “make this shorter” or “traduci in inglese”. It works in any app, VS Code and Sublime Text included.",
+                Text(model.settings.keyOptions.voiceEdit == nil
+                     ? t("Choose keys for voice edit in Settings → Keyboard. Then select your text, hold them and say “make this shorter” or “traduci in inglese”, in any app.",
+                         "Scegli i tasti della modifica a voce in Impostazioni → Tastiera. Poi seleziona il testo, tienili premuti e di’ “rendilo più breve” o “translate into English”, in qualsiasi app.")
+                     : t("Select your text, hold \(t.keys(model.settings.keyOptions.voiceEdit)), then say “make this shorter” or “traduci in inglese”. It works in any app, VS Code and Sublime Text included.",
                        "Seleziona il testo, tieni premuto \(t.keys(model.settings.keyOptions.voiceEdit)), poi di’ “rendilo più breve” o “translate into English”. Funziona in qualsiasi app, anche in VS Code e Sublime Text."))
                     .font(Typeface.text(TypeSize.body)).foregroundStyle(Palette.textSecondary).lineSpacing(leading(TypeSize.body, Leading.reading))
-                    .fixedSize(horizontal: false, vertical: true).padding(.top, Space.sm)
+                    .fixedSize(horizontal: false, vertical: true).measure().padding(.top, Space.sm)
             }
             if transforms.isEmpty {
-                Card { EmptyState(symbol: "pencil.line", title: t("No transforms yet", "Ancora nessuna trasformazione"), detail: t("Create one for an edit you ask for often, such as a translation.", "Creane una per una modifica che chiedi spesso, come una traduzione.")) }
+                Card { EmptyState(symbol: "wand.and.stars", title: t("No transforms yet", "Ancora nessuna trasformazione"), detail: t("Create one for an edit you ask for often, such as a translation.", "Creane una per una modifica che chiedi spesso, come una traduzione."),
+                                  action: missingDefaults.isEmpty ? nil : (t("Restore the defaults", "Ripristina le predefinite"), { model.library.transforms.append(contentsOf: missingDefaults) })) }
             } else {
                 RowList {
                     ForEach(Array(transforms.enumerated()), id: \.element.id) { index, transform in
@@ -282,25 +319,35 @@ struct TransformsView: View {
                         // The keys are their own button, beside the row that opens the prompt.
                         HStack(alignment: .center, spacing: 0) {
                             KeyButton(target: .transform(transform.id), editing: $editingKeys, minWidth: 104).padding(.leading, Space.lg)
-                            EditableRow(hint: t("Opens the prompt to edit or delete it. More actions with a secondary click.", "Apre il prompt per modificarlo o eliminarlo. Altre azioni con il clic secondario."), action: { editing = transform }) {
+                            EditableRow(hint: t("Opens the prompt to edit or delete it. More actions are in the menu beside it.", "Apre il prompt per modificarlo o eliminarlo. Altre azioni sono nel menu accanto."), action: { editing = transform }) {
                                 VStack(alignment: .leading, spacing: Space.xs) {
-                                    Text(transform.name).font(Typeface.text(TypeSize.body, .semibold)).foregroundStyle(Palette.textPrimary)
-                                    Text(transform.instruction).font(Typeface.text(TypeSize.footnote)).foregroundStyle(Palette.textSecondary).lineSpacing(2).lineLimit(3).multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true)
+                                    Text(transform.name).font(Typeface.display(TypeSize.reading)).foregroundStyle(Palette.textPrimary)
+                                    Text(transform.instruction).font(Typeface.text(TypeSize.footnote)).foregroundStyle(Palette.textSecondary).lineSpacing(2).lineLimit(3).multilineTextAlignment(.leading).fixedSize(horizontal: false, vertical: true).measure()
                                 }
                             }
+                            // Duplicate and reorder, in reach of the keyboard and VoiceOver, not only of a secondary click.
+                            Menu { actions(for: transform, at: index, count: transforms.count) } label: { Image(systemName: "ellipsis.circle").font(.system(size: 14, weight: .regular)) }
+                                .menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize().foregroundStyle(Palette.textSecondary)
+                                .frame(width: Sizing.controlMin, height: Sizing.controlMin).padding(.trailing, Space.sm)
+                                .help(t("More actions", "Altre azioni"))
+                                .accessibilityLabel(t("More actions for \(transform.name)", "Altre azioni per \(transform.name)"))
                         }
                         .contextMenu { actions(for: transform, at: index, count: transforms.count) }
+                        .accessibilityAction(named: t("Duplicate", "Duplica")) { duplicate(transform, at: index) }
+                        .accessibilityAction(named: t("Move Up", "Sposta in alto")) { if index > 0 { model.library.transforms.swapAt(index, index - 1) } }
+                        .accessibilityAction(named: t("Move Down", "Sposta in basso")) { if index + 1 < transforms.count { model.library.transforms.swapAt(index, index + 1) } }
                     }
                 }
             }
             HStack(alignment: .firstTextBaseline, spacing: Space.md) {
-                Text(t("Transforms use your writing model, on up to 1,000 selected words. The result replaces the selection only if it has not changed in the meantime.",
-                       "Le trasformazioni usano il tuo modello di scrittura, fino a 1.000 parole selezionate. Il risultato sostituisce la selezione solo se nel frattempo non è cambiata."))
-                    .font(Typeface.text(TypeSize.footnote)).foregroundStyle(Palette.textSecondary).fixedSize(horizontal: false, vertical: true)
+                let most = RewriteBudget.maxWords(model.settings.cleanupProvider).formatted(.number.locale(t.locale))
+                Text(t("Transforms use your writing model, on up to \(most) selected words. The result replaces the selection only if it has not changed in the meantime.",
+                       "Le trasformazioni usano il tuo modello di scrittura, fino a \(most) parole selezionate. Il risultato sostituisce la selezione solo se nel frattempo non è cambiata."))
+                    .font(Typeface.text(TypeSize.footnote)).foregroundStyle(Palette.textSecondary).fixedSize(horizontal: false, vertical: true).measure()
                 Spacer(minLength: Space.md)
                 if !missingDefaults.isEmpty {
                     Button(t("Restore the defaults", "Ripristina le predefinite")) { model.library.transforms.append(contentsOf: missingDefaults) }
-                        .buttonStyle(VerbButtonStyle(kind: .quiet, compact: true)).fixedSize()
+                        .buttonStyle(VerbButtonStyle(kind: .secondary, compact: true)).fixedSize()
                         .help(t("Adds back the ready-made transforms you deleted. Yours stay as they are.", "Aggiunge di nuovo le trasformazioni pronte che hai eliminato. Le tue restano come sono."))
                 }
             }
@@ -313,9 +360,9 @@ struct TransformsView: View {
         } message: { _ in Text(t("Its keys become free. This can’t be undone.", "I suoi tasti tornano liberi. Non si può annullare.")) }
     }
 
-    private var rubric: String {
+    private var rubric: String? {
         let count = model.library.transforms.count
-        guard count > 0 else { return t("No transforms", "Nessuna trasformazione") }
+        guard count > 0 else { return nil }
         let keyed = model.library.transforms.filter { $0.keys != nil }.count
         return t.count(count, "transform", "transforms", "trasformazione", "trasformazioni") + " · " + t.count(keyed, "with keys", "with keys", "con tasti", "con tasti")
     }
@@ -328,12 +375,14 @@ struct TransformsView: View {
         }
     }
 
+    private func duplicate(_ transform: Transform, at index: Int) {
+        model.library.transforms.insert(Transform(name: t("\(transform.name) copy", "\(transform.name) (copia)"), instruction: transform.instruction, keys: model.library.freeTransformKeys(keys: model.settings.keyOptions)), at: index + 1)
+    }
+
     @ViewBuilder private func actions(for transform: Transform, at index: Int, count: Int) -> some View {
         Button(t("Edit Prompt…", "Modifica il prompt…")) { editing = transform }
         Button(t("Change Keys…", "Cambia i tasti…")) { editingKeys = KeyEditing(target: .transform(transform.id)) }
-        Button(t("Duplicate", "Duplica")) {
-            model.library.transforms.insert(Transform(name: t("\(transform.name) copy", "\(transform.name) (copia)"), instruction: transform.instruction, keys: model.library.freeTransformKeys(keys: model.settings.keyOptions)), at: index + 1)
-        }
+        Button(t("Duplicate", "Duplica")) { duplicate(transform, at: index) }
         Divider()
         Button(t("Move Up", "Sposta in alto")) { model.library.transforms.swapAt(index, index - 1) }.disabled(index == 0)
         Button(t("Move Down", "Sposta in basso")) { model.library.transforms.swapAt(index, index + 1) }.disabled(index + 1 >= count)
@@ -352,12 +401,12 @@ struct TransformEditor: View {
     private var saved: Bool { model.library.transforms.contains { $0.id == entry.id } }
     private var valid: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !instruction.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     var body: some View {
-        EditorSheet(title: saved ? t("Edit transform", "Modifica la trasformazione") : t("Shape a transform", "Crea una trasformazione"), width: 500, error: nil,
+        EditorSheet(title: saved ? t("Edit transform", "Modifica la trasformazione") : t("Shape a transform", "Crea una trasformazione"), width: 520, error: nil,
                     save: t("Save", "Salva"), cancel: t("Cancel", "Annulla"), canSave: valid, onSave: save,
                     removal: saved ? SheetRemoval(label: t("Delete", "Elimina"), confirm: t("Delete transform", "Elimina la trasformazione"), question: t("Delete “\(entry.name)”?", "Eliminare “\(entry.name)”?"),
                                            detail: t("Its keys become free. This can’t be undone.", "I suoi tasti tornano liberi. Non si può annullare.")) {
                         model.library.transforms.removeAll { $0.id == entry.id }
-                    } : nil) {
+                    } : nil, multiline: true) {
             VerbField(label: t("Name", "Nome"), text: $name)
             VStack(alignment: .leading, spacing: 6) {
                 FieldLabel(text: "Prompt")
@@ -365,7 +414,7 @@ struct TransformEditor: View {
             }
             Text(t("Write what the model should do with the selected text, as you would in a chat. Keep to one edit, and say which facts and formatting must stay. Verb adds the selected text and returns only the rewritten version.",
                    "Scrivi cosa deve fare il modello con il testo selezionato, come faresti in una chat. Chiedi una sola modifica e indica quali fatti e quale formattazione devono restare. Verb aggiunge il testo selezionato e restituisce solo la versione riscritta."))
-                .font(Typeface.text(TypeSize.footnote)).foregroundStyle(Palette.textSecondary).fixedSize(horizontal: false, vertical: true)
+                .font(Typeface.text(TypeSize.footnote)).foregroundStyle(Palette.textSecondary).fixedSize(horizontal: false, vertical: true).measure()
         }
         .onAppear { name = entry.name; instruction = entry.instruction }
     }
@@ -400,6 +449,8 @@ struct EditorSheet<Fields: View>: View {
     let canSave: Bool
     let onSave: () -> Void
     var removal: SheetRemoval? = nil
+    /// The fields take several lines: Return starts a new one, and ⌘Return saves.
+    var multiline = false
     @ViewBuilder var fields: Fields
     @Environment(\.dismiss) private var dismiss
     @State private var confirmRemoval = false
@@ -407,14 +458,16 @@ struct EditorSheet<Fields: View>: View {
         VStack(alignment: .leading, spacing: Space.lg) {
             Text(title).font(Typeface.display(TypeSize.title2)).foregroundStyle(Palette.textPrimary).accessibilityAddTraits(.isHeader)
             fields
-            if let error { StatusLabel(text: error, symbol: "exclamationmark.triangle", tone: .danger) }
+            if let error { StatusLabel(text: error, symbol: "exclamationmark.triangle", tone: .danger).textSelection(.enabled) }
             HStack(spacing: Space.sm) {
                 if let removal {
                     Button(role: .destructive) { confirmRemoval = true } label: { Label(removal.label, systemImage: "trash") }.buttonStyle(VerbButtonStyle(kind: .danger))
                 }
                 Spacer()
                 Button(cancel) { dismiss() }.buttonStyle(VerbButtonStyle(kind: .quiet)).keyboardShortcut(.cancelAction)
-                Button(save, action: onSave).buttonStyle(VerbButtonStyle(kind: .primary)).keyboardShortcut(.defaultAction).disabled(!canSave)
+                Button(save, action: onSave).buttonStyle(VerbButtonStyle(kind: .primary))
+                    .keyboardShortcut(multiline ? KeyboardShortcut(.return, modifiers: .command) : .defaultAction).disabled(!canSave)
+                    .help(multiline ? "⌘↩" : "↩")
             }
             .padding(.top, Space.xs)
         }

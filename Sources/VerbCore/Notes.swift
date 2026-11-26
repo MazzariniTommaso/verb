@@ -123,10 +123,12 @@ public enum MeetingNotes {
     /// The whole note: front matter, title, summary and transcript. The date is the local time
     /// with its offset from UTC ("2026-09-26T10:30:00+02:00"), so other apps read the same moment.
     /// The transcript goes in as given; the caller words an empty one in the note's language.
-    public static func document(title: String, date: Date, minutes: Int, summary: String?, transcript: String, headings: (summary: String, transcript: String), timeZone: TimeZone = .current) -> String {
+    /// `notes` are what you typed while it ran, kept as you wrote them under their own heading.
+    public static func document(title: String, date: Date, minutes: Int, summary: String?, transcript: String, headings: (summary: String, transcript: String), notes: (heading: String, text: String)? = nil, timeZone: TimeZone = .current) -> String {
         let formatter = ISO8601DateFormatter(); formatter.formatOptions = [.withInternetDateTime]; formatter.timeZone = timeZone
         var parts = ["---\ntype: meeting\ndate: \(formatter.string(from: date))\nminutes: \(minutes)\n---", "# \(title)"]
         if let summary, !summary.isEmpty { parts.append("## \(headings.summary)\n\n" + summary) }
+        if let notes, !notes.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { parts.append("## \(notes.heading)\n\n" + notes.text.trimmingCharacters(in: .whitespacesAndNewlines)) }
         parts.append(transcript.isEmpty ? "## \(headings.transcript)" : "## \(headings.transcript)\n\n" + transcript)
         return parts.joined(separator: "\n\n") + "\n"
     }

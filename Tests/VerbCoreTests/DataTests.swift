@@ -53,7 +53,13 @@ final class DataTests: XCTestCase {
         let store = try HistoryStore(paths: paths)
         let failed = DictationRecord(status: .failed, audioName: UUID().uuidString + ".wav"), done = DictationRecord(status: .completed, audioName: UUID().uuidString + ".wav")
         for record in [failed, done] { try Data([1, 2, 3]).write(to: paths.audio.appendingPathComponent(record.audioName!)); try store.save(record) }
+        // Counted first, as Settings asks before a change that removes anything.
+        XCTAssertEqual(try store.pruneCount(retention: .month, keepAudio: false).recordings, 1)
+        XCTAssertEqual(try store.pruneCount(retention: .month, keepAudio: true).recordings, 0)
+        XCTAssertEqual(try store.pruneCount(retention: .none, keepAudio: true).entries, 2)
+        XCTAssertEqual(try store.pruneCount(retention: .day, keepAudio: true, now: Date().addingTimeInterval(2 * 86400)).entries, 2)
         try store.prune(retention: .month, keepAudio: false)
+        XCTAssertEqual(try store.pruneCount(retention: .month, keepAudio: false).recordings, 0, "nothing left to remove")
         XCTAssertTrue(FileManager.default.fileExists(atPath: paths.audio.appendingPathComponent(failed.audioName!).path))
         XCTAssertFalse(FileManager.default.fileExists(atPath: paths.audio.appendingPathComponent(done.audioName!).path))
         // It still expires with the others.

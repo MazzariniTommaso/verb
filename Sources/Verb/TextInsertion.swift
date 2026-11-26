@@ -1,5 +1,6 @@
 import AppKit
 import ApplicationServices
+import Carbon
 import VerbCore
 
 @MainActor struct TextTarget {
@@ -11,19 +12,46 @@ import VerbCore
     let role: String?
     let selection: String
     let secure: Bool
+    /// The window's title and the characters just before the cursor, to tell the field from the
+    /// same field showing another conversation or file.
+    var title: String? = nil
+    var before: String? = nil
+    /// The app was too slow to say what has focus: it is asked again when the text is ready.
+    var unanswered = false
     /// Whether the focused element can take the text, or Verb should copy it for ⌘V instead.
     var verdict: InsertionPolicy.Verdict {
         InsertionPolicy.verdict(hasElement: element != nil, role: role, hasTextRange: range != nil, bundleID: bundleID, isVerb: pid == ProcessInfo.processInfo.processIdentifier)
     }
+    /// Apps that hold passwords: nothing typed or read there.
+    static let sensitiveApps: Set<String> = ["com.agilebits.onepassword7", "com.1password.1password", "com.apple.Passwords", "com.apple.keychainaccess", "com.bitwarden.desktop",
+                                             "org.keepassxc.keepassxc", "com.lastpass.LastPass", "in.sinew.Enpass-Desktop"]
     static func attribute(_ element: AXUIElement, _ name: String) -> CFTypeRef? {
         var value: CFTypeRef?
         guard AXUIElementCopyAttributeValue(element, name as CFString, &value) == .success else { return nil }
         return value
     }
-    static func focused(_ pid: pid_t) -> AXUIElement? {
-        let app = AXUIElementCreateApplication(pid)
-        guard let value = attribute(app, kAXFocusedUIElementAttribute), CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
+    static func element(_ value: CFTypeRef?) -> AXUIElement? {
+        guard let value, CFGetTypeID(value) == AXUIElementGetTypeID() else { return nil }
         return unsafeBitCast(value, to: AXUIElement.self)
+    }
+    static func focused(_ pid: pid_t) -> AXUIElement? { element(attribute(AXUIElementCreateApplication(pid), kAXFocusedUIElementAttribute)) }
+    /// What has the keyboard: the focused element of the whole Mac, which is where a panel such
+    /// as Spotlight's or Alfred's types although it never becomes the app in front. The front
+    /// app when the Mac can't say, `unanswered` when that app didn't reply in time.
+    static func focusedNow() -> (pid: pid_t, element: AXUIElement?, unanswered: Bool)? {
+        let front = NSWorkspace.shared.frontmostApplication
+        guard AXIsProcessTrusted() else { return front.map { ($0.processIdentifier, nil, false) } }
+        var value: CFTypeRef?
+        let result = AXUIElementCopyAttributeValue(AXUIElementCreateSystemWide(), kAXFocusedUIElementAttribute as CFString, &value)
+        if result == .success, let found = element(value) {
+            var pid: pid_t = 0
+            if AXUIElementGetPid(found, &pid) == .success, pid > 0 { return (pid, found, false) }
+        }
+        guard let front else { return nil }
+        if result == .cannotComplete { return (front.processIdentifier, nil, true) }
+        var own: CFTypeRef?
+        let answer = AXUIElementCopyAttributeValue(AXUIElementCreateApplication(front.processIdentifier), kAXFocusedUIElementAttribute as CFString, &own)
+        return (front.processIdentifier, answer == .success ? element(own) : nil, answer == .cannotComplete)
     }
     static func selectedRange(_ element: AXUIElement) -> CFRange? {
         guard let value = attribute(element, kAXSelectedTextRangeAttribute), CFGetTypeID(value) == AXValueGetTypeID() else { return nil }
@@ -31,20 +59,39 @@ import VerbCore
         guard AXValueGetValue(unsafeBitCast(value, to: AXValue.self), .cfRange, &range) else { return nil }
         return range
     }
+    /// The title of the window the element is in.
+    static func windowTitle(_ element: AXUIElement, pid: pid_t) -> String? {
+        let window = self.element(attribute(element, kAXWindowAttribute)) ?? self.element(attribute(AXUIElementCreateApplication(pid), kAXFocusedWindowAttribute))
+        return window.flatMap { attribute($0, kAXTitleAttribute) as? String }
+    }
+    /// The few characters before the cursor, when the field shows them.
+    static func textBefore(_ element: AXUIElement, range: CFRange?) -> String? {
+        guard let range, range.location >= 0 else { return nil }
+        let start = max(0, range.location - 48)
+        return FieldContext.string(element, CFRange(location: start, length: range.location - start))
+    }
     static func capture(includeSelection: Bool = false) -> TextTarget? {
-        guard let app = NSWorkspace.shared.frontmostApplication else { return nil }
-        let element = AXIsProcessTrusted() ? focused(app.processIdentifier) : nil
+        guard let focus = focusedNow() else { return nil }
+        let app = NSRunningApplication(processIdentifier: focus.pid)
+        let bundleID = app?.bundleIdentifier ?? "", element = focus.element
         let subrole = element.flatMap { attribute($0, kAXSubroleAttribute) as? String } ?? ""
-        let secure = subrole == kAXSecureTextFieldSubrole || ["com.agilebits.onepassword7", "com.1password.1password", "com.apple.Passwords"].contains(app.bundleIdentifier ?? "")
-        return TextTarget(pid: app.processIdentifier, appName: app.localizedName ?? app.bundleURL?.deletingPathExtension().lastPathComponent ?? app.bundleIdentifier ?? "?", bundleID: app.bundleIdentifier ?? "", element: element, range: element.flatMap(selectedRange),
+        let secure = subrole == kAXSecureTextFieldSubrole || sensitiveApps.contains(bundleID)
+        let range = element.flatMap(selectedRange)
+        return TextTarget(pid: focus.pid, appName: app?.localizedName ?? app?.bundleURL?.deletingPathExtension().lastPathComponent ?? (bundleID.isEmpty ? "?" : bundleID), bundleID: bundleID, element: element, range: range,
                           role: element.flatMap { attribute($0, kAXRoleAttribute) as? String },
-                          selection: !secure && includeSelection ? (element.flatMap { attribute($0, kAXSelectedTextAttribute) as? String } ?? "") : "", secure: secure)
+                          selection: !secure && includeSelection ? (element.flatMap { attribute($0, kAXSelectedTextAttribute) as? String } ?? "") : "", secure: secure,
+                          title: element.flatMap { windowTitle($0, pid: focus.pid) }, before: secure ? nil : element.flatMap { textBefore($0, range: range) },
+                          unanswered: focus.unanswered || (element == nil && FieldReach.recentlyWoken(focus.pid)))
     }
     func stillMatches(requireSelection: Bool = false) -> Bool {
-        guard NSWorkspace.shared.frontmostApplication?.processIdentifier == pid, let element, let current = Self.focused(pid), CFEqual(element, current) else { return false }
+        guard let element, let now = Self.focusedNow(), now.pid == pid, let current = now.element else { return false }
         if let range {
             guard let currentRange = Self.selectedRange(current), range.location == currentRange.location, range.length == currentRange.length else { return false }
         }
+        let same = CFEqual(element, current)
+        let terminal = CodeBundles.terminals.contains(bundleID)
+        guard FieldIdentity.same(element: same, title: title, titleNow: terminal ? nil : Self.windowTitle(current, pid: pid), before: before,
+                                 beforeNow: terminal || before == nil ? nil : Self.textBefore(current, range: range), terminal: terminal) else { return false }
         if requireSelection, (Self.attribute(current, kAXSelectedTextAttribute) as? String ?? "") != selection { return false }
         return true
     }
@@ -138,17 +185,72 @@ private final class PasteSupply: NSObject, NSPasteboardItemDataProvider {
     }
 }
 
+/// The keys that type “v” and “c” with ⌘ held on the keyboard layout in use: Dvorak and other
+/// layouts move them. QWERTY's keys when the layout can't say.
+@MainActor enum CommandKeys {
+    private static var known: (layout: String, keys: [Character: CGKeyCode])?
+    static var paste: CGKeyCode { key("v", standard: 9) }
+    static var copy: CGKeyCode { key("c", standard: 8) }
+
+    private static func key(_ letter: Character, standard: CGKeyCode) -> CGKeyCode {
+        guard let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue() else { return standard }
+        let layout = TISGetInputSourceProperty(source, kTISPropertyInputSourceID).map { Unmanaged<CFString>.fromOpaque($0).takeUnretainedValue() as String } ?? ""
+        if known?.layout != layout {
+            let ascii = TISCopyCurrentASCIICapableKeyboardLayoutInputSource()?.takeRetainedValue()
+            known = (layout, keys(in: source) ?? ascii.flatMap(keys) ?? [:])
+        }
+        return known?.keys[letter] ?? standard
+    }
+    /// The key that types each of Verb's letters with ⌘ held, QWERTY's own first when it still does.
+    private static func keys(in source: TISInputSource) -> [Character: CGKeyCode]? {
+        guard let pointer = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData) else { return nil }
+        let data = Unmanaged<CFData>.fromOpaque(pointer).takeUnretainedValue()
+        guard let bytes = CFDataGetBytePtr(data) else { return nil }
+        let layout = UnsafeRawPointer(bytes).assumingMemoryBound(to: UCKeyboardLayout.self)
+        let command = UInt32((cmdKey >> 8) & 0xFF), keyboard = UInt32(LMGetKbdType())
+        var found: [Character: CGKeyCode] = [:]
+        for code in [9, 8] + Array(0..<128) {
+            var dead: UInt32 = 0, length = 0
+            var characters = [UniChar](repeating: 0, count: 4)
+            guard UCKeyTranslate(layout, UInt16(code), UInt16(kUCKeyActionDown), command, keyboard, OptionBits(kUCKeyTranslateNoDeadKeysMask), &dead, characters.count, &length, &characters) == noErr,
+                  length == 1, let letter = String(utf16CodeUnits: characters, count: 1).lowercased().first, letter == "v" || letter == "c", found[letter] == nil else { continue }
+            found[letter] = CGKeyCode(code)
+        }
+        return found.count == 2 ? found : nil
+    }
+}
+
 @MainActor final class TextInserter {
     private var previousClipboard: [[NSPasteboard.PasteboardType: Data]] = []
     private var pastedChangeCount: Int?
     private var supply: PasteSupply?
-    private var restoreSoon = false
+    /// When the app last read the paste, and when ⌘V went out.
+    private var lastRead: Date?, posted: Date?
+    /// Called if the app takes a paste after Verb said it hadn't.
+    private var late: (() -> Void)?
+    /// The clipboard as it was at a change count, so the next dictation doesn't read it again.
+    private var known: (count: Int, items: [[NSPasteboard.PasteboardType: Data]])?
     var hasPreviousClipboard: Bool { pastedChangeCount != nil }
-    func copy(_ text: String) { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string); pastedChangeCount = nil; previousClipboard = [] }
+    func copy(_ text: String) { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(text, forType: .string); pastedChangeCount = nil; previousClipboard = []; late = nil }
     func restoreClipboard() {
-        guard let count = pastedChangeCount, NSPasteboard.general.changeCount == count else { pastedChangeCount = nil; return }
-        Self.write(previousClipboard, to: NSPasteboard.general); pastedChangeCount = nil; previousClipboard = []
-        supply = nil; restoreSoon = false
+        guard let count = pastedChangeCount, NSPasteboard.general.changeCount == count else { pastedChangeCount = nil; late = nil; return }
+        let saved = previousClipboard
+        Self.write(saved, to: NSPasteboard.general); pastedChangeCount = nil; previousClipboard = []
+        supply = nil; lastRead = nil; posted = nil; late = nil
+        settle(saved)
+    }
+    /// What Verb put back is what you had copied: the next dictation needn't read it again. A
+    /// password goes again after a minute and a half, as password managers clear it: putting it
+    /// back would otherwise keep it there for good.
+    private func settle(_ saved: [[NSPasteboard.PasteboardType: Data]]) {
+        let board = NSPasteboard.general, count = board.changeCount
+        known = (count, saved)
+        guard saved.contains(where: { $0[Self.concealed] != nil }) else { return }
+        Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 90_000_000_000)
+            guard board.changeCount == count else { return }
+            board.clearContents(); self?.known = nil
+        }
     }
     /// Whether a modifier key is physically down. The paste and the copy wait until none is, as a
     /// held ⌃ or ⌥ would change the shortcut. It asks for the keys themselves: the modifier flags
@@ -172,37 +274,78 @@ private final class PasteSupply: NSObject, NSPasteboardItemDataProvider {
         }
         return true
     }
-    /// Every item on the clipboard, with every kind of data it holds.
-    private static func snapshot(_ board: NSPasteboard) -> [[NSPasteboard.PasteboardType: Data]] {
-        (board.pasteboardItems ?? []).map { item in Dictionary(uniqueKeysWithValues: item.types.compactMap { type in item.data(forType: type).map { (type, $0) } }) }
+    static let transient = NSPasteboard.PasteboardType("org.nspasteboard.TransientType")
+    static let concealed = NSPasteboard.PasteboardType("org.nspasteboard.ConcealedType")
+    /// Files an app promised to deliver: only that app can, so they can't be kept.
+    private static let promised: Set<String> = ["com.apple.pasteboard.promised-file-content-type", "com.apple.pasteboard.promised-file-url", "com.apple.pasteboard.promised-suggested-file-name",
+                                                "com.apple.NSFilePromiseItemMetaData", "NSPromiseContentsPboardType", "Apple files promise pasteboard type"]
+    /// Every item on the clipboard, with every kind of data it holds. Past 200 MB, as with a large
+    /// spreadsheet range or image, each further item keeps only its main kind.
+    private func snapshot(_ board: NSPasteboard) -> [[NSPasteboard.PasteboardType: Data]] {
+        if let known, known.count == board.changeCount { return known.items }
+        var total = 0
+        let items = (board.pasteboardItems ?? []).map { item -> [NSPasteboard.PasteboardType: Data] in
+            var values: [NSPasteboard.PasteboardType: Data] = [:]
+            for type in item.types where !Self.promised.contains(type.rawValue) && (total < 200_000_000 || values.isEmpty) {
+                guard let data = item.data(forType: type) else { continue }
+                values[type] = data; total += data.count
+            }
+            return values
+        }.filter { !$0.isEmpty }
+        known = (board.changeCount, items)
+        return items
     }
+    /// Puts back what was saved, marked as transient so clipboard managers don't take it for a new copy.
     private static func write(_ saved: [[NSPasteboard.PasteboardType: Data]], to board: NSPasteboard) {
-        let items = saved.map { values -> NSPasteboardItem in let item = NSPasteboardItem(); for (type, data) in values { item.setData(data, forType: type) }; return item }
+        let items = saved.map { values -> NSPasteboardItem in
+            let item = NSPasteboardItem()
+            for (type, data) in values { item.setData(data, forType: type) }
+            if values[transient] == nil { item.setData(Data(), forType: transient) }
+            return item
+        }
         board.clearContents(); board.writeObjects(items)
     }
-    /// The app took the paste: what you had copied comes back a quarter of a second later, time
-    /// enough for it to read every kind of text it wants, so your next ⌘V is yours.
+    /// The app read the paste. What you had copied comes back a quarter of a second after its
+    /// last read, time enough for every kind of text it wants, and half a second after ⌘V at the
+    /// soonest, so your next ⌘V is yours. An app slower than Verb said gets its note put right.
     private func pasteWasRead() {
-        guard let count = pastedChangeCount, !restoreSoon else { return }
-        restoreSoon = true
+        guard pastedChangeCount != nil else { return }
+        lastRead = Date()
+        if let late { self.late = nil; late() }
+    }
+    private func restoreWhenRead(_ changeCount: Int) {
         Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 250_000_000)
-            guard let self, self.pastedChangeCount == count else { return }
-            self.restoreClipboard()
+            while true {
+                try? await Task.sleep(nanoseconds: 50_000_000)
+                guard let self, self.pastedChangeCount == changeCount else { return }
+                let now = Date(), posted = self.posted ?? now
+                // An app that never reads it gets ten seconds, for the slowest, then the clipboard is yours again.
+                let done = self.lastRead.map { now.timeIntervalSince($0) >= 0.25 && now.timeIntervalSince(posted) >= 0.5 } ?? (now.timeIntervalSince(posted) >= 10)
+                if done { self.restoreClipboard(); return }
+            }
         }
     }
     /// Delivery notes for text that was not pasted. The clipboard is left alone: the text waits
     /// as the last dictation, for the paste-last and copy keys. They all end the same way, which
     /// is how the rest of the app tells them apart from a paste.
     static let keptNoField = "No text field · kept as your last dictation"
+    static let keptInHistory = "Not pasted · kept in History"
     static let keptMoved = "Destination changed · kept as your last dictation"
+    static let retried = "Retried · the new text is in History"
+    static func notTaken(_ app: String) -> String { "\(app) didn’t take the paste · kept as your last dictation" }
 
     /// `html` carries a formatted snippet's formatting; apps that don't read it get `text`.
     /// `copied` is the selection read by copying it, for an app that hides it from Accessibility.
-    func insert(_ text: String, html: String? = nil, target: TextTarget?, requireSelection: Bool = false, copied: String? = nil) async throws -> String {
-        guard let target else { return Self.keptNoField }
+    /// `late` is called if the app takes the paste after Verb said it hadn't.
+    func insert(_ text: String, html: String? = nil, target: TextTarget?, requireSelection: Bool = false, copied: String? = nil, late: (() -> Void)? = nil) async throws -> String {
+        guard var target else { return Self.keptNoField }
         guard !target.secure else { return "Sensitive field · ready to copy" }
         guard AXIsProcessTrusted() else { return "Accessibility is off · kept as your last dictation" }
+        // An app that was too slow to say what had focus is asked again, if it is still the one in front.
+        if target.unanswered, !requireSelection, let again = TextTarget.capture(), again.pid == target.pid, !again.unanswered {
+            target = again
+            guard !target.secure else { return "Sensitive field · ready to copy" }
+        }
         // With nothing to type into, such as the desktop, the text waits as the last dictation.
         guard target.verdict != .none else { return Self.keptNoField }
         guard target.stillMatches(requireSelection: requireSelection) else { return Self.keptMoved }
@@ -221,7 +364,7 @@ private final class PasteSupply: NSObject, NSPasteboardItemDataProvider {
         // Accessibility can't tell whether a hidden selection moved: it is copied again, and the text
         // goes in only where that selection still is.
         if requireSelection, let copied {
-            guard try await copySelection() == copied else { return Self.keptMoved }
+            guard try await copySelection(for: target) == copied else { return Self.keptMoved }
             guard target.stillMatches(requireSelection: requireSelection) else { return Self.keptMoved }
         }
 
@@ -229,48 +372,50 @@ private final class PasteSupply: NSObject, NSPasteboardItemDataProvider {
         // or firing their input events. Use the application's normal paste path.
         guard stage(text, html: html), let changeCount = pastedChangeCount else { return "Clipboard unavailable · kept as your last dictation" }
         guard target.stillMatches(requireSelection: requireSelection) else { restoreClipboard(); return Self.keptMoved }
-        guard Self.postCommand(9) else { restoreClipboard(); return "Could not send paste · kept as your last dictation" }
-        // What you had copied comes back as soon as the app has read the paste (see
-        // pasteWasRead), or after a second and a half if it never does; unless something new was
-        // copied in the meantime.
-        Task { [weak self] in
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
-            guard let self, self.pastedChangeCount == changeCount else { return }
-            self.restoreClipboard()
+        guard Self.postCommand(CommandKeys.paste) else { restoreClipboard(); return "Could not send paste · kept as your last dictation" }
+        posted = Date()
+        restoreWhenRead(changeCount)
+        // The app takes the paste by reading the clipboard, most within a tenth of a second. One
+        // that hasn't in a second likely had nowhere to put it: the text stays on the clipboard
+        // for a while all the same, in case it is only slow.
+        for _ in 0..<50 {
+            if lastRead != nil || pastedChangeCount != changeCount { break }
+            try? await Task.sleep(nanoseconds: 20_000_000)
         }
-        // Posting an event has no delivery acknowledgement; don't claim AX success.
-        return "Paste sent to \(target.appName)"
+        guard lastRead == nil, pastedChangeCount == changeCount else { return "Paste sent to \(target.appName)" }
+        self.late = late
+        return Self.notTaken(target.appName)
     }
 
     /// Reads the selection by copying it, for apps that don't show their selection to
     /// Accessibility, such as VS Code, Sublime Text and many Electron apps. It waits for the
-    /// keys to be let go, as a held ⌃ or ⌥ would change ⌘C, and gives the clipboard its
-    /// contents back straight after.
-    func copySelection() async throws -> String? {
+    /// keys to be let go, as a held ⌃ or ⌥ would change ⌘C, copies only while the field is still
+    /// the one you spoke for, and gives the clipboard its contents back straight after.
+    func copySelection(for target: TextTarget) async throws -> String? {
         let deadline = Date().addingTimeInterval(1.5)
         while Self.modifierKeysDown {
             try Task.checkCancellation()
             guard Date() < deadline else { return nil }
             try await Task.sleep(nanoseconds: 20_000_000)
         }
-        guard AXIsProcessTrusted() else { return nil }
+        guard AXIsProcessTrusted(), target.stillMatches() else { return nil }
         let board = NSPasteboard.general
         // While the last paste is still on the clipboard, what you had copied is the one saved before it.
         let pending = pastedChangeCount == board.changeCount
-        let saved = pending ? previousClipboard : Self.snapshot(board)
-        if pending { pastedChangeCount = nil; previousClipboard = []; supply = nil; restoreSoon = false }
+        let saved = pending ? previousClipboard : snapshot(board)
+        if pending { pastedChangeCount = nil; previousClipboard = []; supply = nil; lastRead = nil; posted = nil; late = nil }
         let before = board.changeCount
-        guard Self.postCommand(8) else { if pending { Self.write(saved, to: board) }; return nil }
+        guard Self.postCommand(CommandKeys.copy) else { if pending { Self.write(saved, to: board); settle(saved) }; return nil }
         // The app copies in its own time; half a second is plenty. Nothing copied means nothing selected.
         var copied: String?
         for _ in 0..<25 {
             try await Task.sleep(nanoseconds: 20_000_000)
-            if board.changeCount != before { copied = board.string(forType: .string); break }
+            if board.changeCount != before { copied = Self.selection(on: board); break }
         }
-        let putBack = { Self.write(saved, to: board) }
+        let putBack = { [weak self] in Self.write(saved, to: board); self?.settle(saved) }
         if board.changeCount != before || pending { putBack() }
-        if copied == nil {
-            // An app slow to copy gets the clipboard back all the same, when it does.
+        // An app slow to copy gets the clipboard back all the same, when it does; a password stays gone.
+        if copied == nil, !saved.contains(where: { $0[Self.concealed] != nil }) {
             let now = board.changeCount
             Task { @MainActor in
                 for _ in 0..<40 { try? await Task.sleep(nanoseconds: 50_000_000); if board.changeCount != now { putBack(); return } }
@@ -279,14 +424,23 @@ private final class PasteSupply: NSObject, NSPasteboardItemDataProvider {
         guard let copied, !copied.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return nil }
         return copied
     }
+    /// The text an app copied, unless it copied the whole line because nothing was selected, as
+    /// VS Code and its kin do and say in the data they copy with it.
+    private static func selection(on board: NSPasteboard) -> String? {
+        let metadata = board.string(forType: NSPasteboard.PasteboardType("vscode-editor-data"))
+            ?? ["org.chromium.web-custom-data", "chromium/x-web-custom-data"].lazy.compactMap { board.data(forType: NSPasteboard.PasteboardType($0)) }.first.flatMap { CopiedText.chromiumCustomData($0)["vscode-editor-data"] }
+        if let metadata, CopiedText.isWholeLine(metadata: metadata) { return nil }
+        return board.string(forType: .string)
+    }
 
     /// Moves the cursor back over the last `count` characters just pasted, to where a
-    /// snippet's {cursore} was. The arrows follow the paste in the same queue of events.
-    func moveCursorBack(_ count: Int) {
+    /// snippet's {cursore} was. The arrows follow the paste in the same queue of events, and
+    /// only while the app is still the one pasted into.
+    func moveCursorBack(_ count: Int, in target: TextTarget) {
         let steps = min(count, 400)
         Task {
             try? await Task.sleep(nanoseconds: 120_000_000)
-            guard let source = CGEventSource(stateID: .privateState) else { return }
+            guard TextTarget.focusedNow()?.pid == target.pid, let source = CGEventSource(stateID: .privateState) else { return }
             for _ in 0..<steps {
                 guard let down = CGEvent(keyboardEventSource: source, virtualKey: 123, keyDown: true), let up = CGEvent(keyboardEventSource: source, virtualKey: 123, keyDown: false) else { return }
                 down.flags = []; up.flags = []
@@ -301,7 +455,7 @@ private final class PasteSupply: NSObject, NSPasteboardItemDataProvider {
     private func stage(_ text: String, html: String? = nil) -> Bool {
         let board = NSPasteboard.general
         // While the last paste is still on the clipboard, what you had copied stays the one saved before it.
-        if pastedChangeCount != board.changeCount { previousClipboard = Self.snapshot(board) }
+        if pastedChangeCount != board.changeCount { previousClipboard = snapshot(board) }
         board.clearContents()
         let item = NSPasteboardItem()
         var document: String?, rtf: Data?
@@ -324,8 +478,8 @@ private final class PasteSupply: NSObject, NSPasteboardItemDataProvider {
         let supply = PasteSupply(text: text, html: document, rtf: rtf)
         supply.read = { [weak self] in DispatchQueue.main.async { MainActor.assumeIsolated { self?.pasteWasRead() } } }
         item.setDataProvider(supply, forTypes: [.string] + (document == nil ? [] : [.html]) + (rtf == nil ? [] : [.rtf]))
-        self.supply = supply; restoreSoon = false
-        item.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.TransientType"))
+        self.supply = supply; lastRead = nil; posted = nil; late = nil
+        item.setData(Data(), forType: Self.transient)
         item.setData(Data(), forType: NSPasteboard.PasteboardType("org.nspasteboard.AutoGeneratedType"))
         guard board.writeObjects([item]) else { pastedChangeCount = board.changeCount; restoreClipboard(); return false }
         pastedChangeCount = board.changeCount

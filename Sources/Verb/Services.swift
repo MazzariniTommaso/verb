@@ -4,6 +4,7 @@ import AudioToolbox
 import CoreAudio
 import CryptoKit
 import IOKit
+import os
 import Security
 import VerbCore
 import VerbEngine
@@ -84,61 +85,6 @@ enum Secrets {
     var pid: pid_t? { process?.isRunning == true ? process?.processIdentifier : adopted }
 }
 
-struct MicrophoneDevice: Identifiable, Equatable {
-    let id: String; let name: String; let deviceID: AudioDeviceID
-    var transport: UInt32 = 0
-    var isBuiltIn: Bool { transport == kAudioDeviceTransportTypeBuiltIn }
-    var isBluetooth: Bool { transport == kAudioDeviceTransportTypeBluetooth || transport == kAudioDeviceTransportTypeBluetoothLE }
-}
-enum Microphones {
-    /// The input macOS uses when none is chosen.
-    static func systemDefault() -> MicrophoneDevice? {
-        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultInputDevice, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
-        var device = AudioDeviceID(0), size = UInt32(MemoryLayout<AudioDeviceID>.size)
-        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &device) == noErr else { return nil }
-        return list().first { $0.deviceID == device }
-    }
-    /// The microphone a dictation would use: the chosen one, or the system's, or the Mac's own
-    /// instead of Bluetooth headphones, which switch to call quality while their mic is open.
-    static func effective(_ chosen: String, preferBuiltIn: Bool) -> MicrophoneDevice? {
-        let devices = list()
-        if !chosen.isEmpty { return devices.first { $0.id == chosen } }
-        let system = systemDefault()
-        // With the lid closed the Mac's own microphone hears nothing: the headset it is.
-        if preferBuiltIn, system?.isBluetooth == true, !lidClosed, let builtIn = devices.first(where: \.isBuiltIn) { return builtIn }
-        return system
-    }
-    /// Whether the laptop's lid is closed, as with an external display.
-    static var lidClosed: Bool {
-        let root = IOServiceGetMatchingService(kIOMainPortDefault, IOServiceMatching("IOPMrootDomain"))
-        guard root != 0 else { return false }
-        defer { IOObjectRelease(root) }
-        return (IORegistryEntryCreateCFProperty(root, "AppleClamshellState" as CFString, kCFAllocatorDefault, 0)?.takeRetainedValue() as? Bool) ?? false
-    }
-    static func list() -> [MicrophoneDevice] {
-        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDevices, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
-        var size: UInt32 = 0
-        guard AudioObjectGetPropertyDataSize(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size) == noErr else { return [] }
-        var devices = [AudioDeviceID](repeating: 0, count: Int(size) / MemoryLayout<AudioDeviceID>.size)
-        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &devices) == noErr else { return [] }
-        func string(_ device: AudioDeviceID, _ selector: AudioObjectPropertySelector) -> String? {
-            var address = AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
-            var value: Unmanaged<CFString>?; var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
-            guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, &value) == noErr else { return nil }
-            return value?.takeRetainedValue() as String?
-        }
-        return devices.compactMap { device in
-            var address = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyStreams, mScope: kAudioDevicePropertyScopeInput, mElement: kAudioObjectPropertyElementMain)
-            var size: UInt32 = 0
-            guard AudioObjectGetPropertyDataSize(device, &address, 0, nil, &size) == noErr, size > 0, let uid = string(device, kAudioDevicePropertyDeviceUID) else { return nil }
-            var transportAddress = AudioObjectPropertyAddress(mSelector: kAudioDevicePropertyTransportType, mScope: kAudioObjectPropertyScopeGlobal, mElement: kAudioObjectPropertyElementMain)
-            var transport = UInt32(0), transportSize = UInt32(MemoryLayout<UInt32>.size)
-            AudioObjectGetPropertyData(device, &transportAddress, 0, nil, &transportSize, &transport)
-            return MicrophoneDevice(id: uid, name: string(device, kAudioObjectPropertyName) ?? "Microphone", deviceID: device, transport: transport)
-        }
-    }
-}
-
 /// A moment the voice-activity detector noticed, with the audio needed to check the words.
 struct SpeechMoment: Sendable {
     let event: VoiceActivity.Event
@@ -156,21 +102,29 @@ struct SpeechMoment: Sendable {
 
 /// Turns the microphone into 16 kHz mono on its own queue. It always feeds the voice-activity
 /// detector and a ring of the last few seconds, both kept in memory only. Audio reaches the
-/// disk only while a dictation records.
+/// disk only while a dictation records. Of a device's several inputs it takes the loudest, so
+/// a microphone on the second input of an audio interface is heard.
 private final class AudioSink: @unchecked Sendable {
     let queue = DispatchQueue(label: "app.verb.audio-write", qos: .userInitiated)
     private let slots = DispatchSemaphore(value: 24)
-    private let converter: AVAudioConverter
-    private let format: AVAudioFormat
+    private static let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
+    private var format: AVAudioFormat { Self.format }
     private let meter: @Sendable ([Float]) -> Void
     private let heard: @Sendable (SpeechMoment) -> Void
+    /// Called once when the disk stops taking a dictation, so it can end at once.
+    private let failed: @Sendable () -> Void
     // Everything below belongs to `queue`.
+    private var converter: AVAudioConverter?
     private var file: AVAudioFile?
     private var error: Error?
+    /// Samples of the dictation a full queue let go, at 16 kHz.
+    private var lost = 0
     private var voicedSeconds: Double = 0
     private var recorded: Int64 = 0
     /// The loudest sample of the dictation: next to nothing means the microphone gave silence.
     private var peak: Float = 0
+    /// Pieces of audio the microphone has delivered, to tell a device that sends nothing.
+    private var arrived = 0
     private var ring = SampleRing(capacity: 16000 * 12)
     private var activity = VoiceActivity()
     /// The last two minutes of the dictation, kept in memory for the live preview; the file has
@@ -183,27 +137,47 @@ private final class AudioSink: @unchecked Sendable {
     /// The longest stretch a voice check looks at: enough for "…ci vediamo domani, ehi Verb stop".
     private static let checkWindow = 16000 * 4
 
-    init(input: AVAudioFormat, meter: @escaping @Sendable ([Float]) -> Void, heard: @escaping @Sendable (SpeechMoment) -> Void) throws {
-        let format = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: 16000, channels: 1, interleaved: false)!
-        guard let converter = AVAudioConverter(from: input, to: format) else { throw VerbError("This microphone's audio format is unsupported.") }
-        self.format = format; self.converter = converter; self.meter = meter; self.heard = heard
+    init(meter: @escaping @Sendable ([Float]) -> Void, heard: @escaping @Sendable (SpeechMoment) -> Void, failed: @escaping @Sendable () -> Void) {
+        self.meter = meter; self.heard = heard; self.failed = failed
     }
+    /// The microphone's format: the engine started, or started again on another device.
+    func use(input: AVAudioFormat) throws {
+        let mono = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: input.sampleRate, channels: 1, interleaved: false)!
+        guard let converter = AVAudioConverter(from: mono, to: format) else { throw VerbError("This microphone's audio format is unsupported.") }
+        queue.sync { self.converter = converter }
+    }
+    /// Where the stream is now, to start a dictation's file at this point.
+    var position: Int { queue.sync { ring.end } }
+    var received: Int { queue.sync { arrived } }
+
     func consume(_ input: AVAudioPCMBuffer) {
+        let frames = Int(input.frameLength)
         guard slots.wait(timeout: .now()) == .success else {
-            // A recording needs every buffer; listening can miss one.
-            queue.async { if self.file != nil { self.error = VerbError("Audio storage could not keep up. Check disk space and retry with a shorter recording.") } }
+            // A dictation needs every buffer; what a slow disk makes it miss is counted and said at the end.
+            let missed = Int(Double(frames) * 16000 / input.format.sampleRate)
+            queue.async { if self.file != nil { self.lost += missed } }
             return
         }
-        // Copy before leaving the render callback: AVAudioEngine reuses the incoming buffer.
-        guard let copied = AVAudioPCMBuffer(pcmFormat: input.format, frameCapacity: input.frameLength) else { slots.signal(); return }
+        // Copy before leaving the audio thread: the microphone reuses the incoming buffer. Of
+        // several channels, the loudest one, where the voice is.
+        guard frames > 0, let channels = input.floatChannelData,
+              let mono = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: input.format.sampleRate, channels: 1, interleaved: false),
+              let copied = AVAudioPCMBuffer(pcmFormat: mono, frameCapacity: input.frameLength), let target = copied.floatChannelData?[0] else { slots.signal(); return }
         copied.frameLength = input.frameLength
-        let source = UnsafeMutableAudioBufferListPointer(input.mutableAudioBufferList)
-        let destination = UnsafeMutableAudioBufferListPointer(copied.mutableAudioBufferList)
-        for i in 0..<min(source.count, destination.count) {
-            if let src = source[i].mData, let dst = destination[i].mData { memcpy(dst, src, Int(source[i].mDataByteSize)) }
+        var loudest = 0
+        if input.format.channelCount > 1 {
+            var best: Float = -1
+            for channel in 0..<Int(input.format.channelCount) {
+                var energy: Float = 0
+                for index in stride(from: 0, to: frames, by: 4) { energy += channels[channel][index] * channels[channel][index] }
+                if energy > best { best = energy; loudest = channel }
+            }
         }
+        target.update(from: channels[loudest], count: frames)
         queue.async { [self] in
             defer { slots.signal() }
+            arrived += 1
+            guard let converter else { return }
             let capacity = AVAudioFrameCount(ceil(Double(copied.frameLength) * 16000 / copied.format.sampleRate)) + 32
             guard let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: capacity) else { return }
             var supplied = false, conversionError: NSError?
@@ -211,20 +185,25 @@ private final class AudioSink: @unchecked Sendable {
                 if supplied { status.pointee = .noDataNow; return nil }
                 supplied = true; status.pointee = .haveData; return copied
             }
-            if let conversionError { if file != nil { error = conversionError }; return }
+            if let conversionError {
+                if file != nil, error == nil { error = conversionError; failed() }
+                return
+            }
             let count = Int(output.frameLength)
             guard count > 0, let channel = output.floatChannelData?[0] else { return }
             let chunk = Array(UnsafeBufferPointer(start: channel, count: count))
             if file != nil, error == nil {
-                do { try file?.write(from: output) } catch { self.error = error }
-                take.append(contentsOf: chunk)
-                if take.count > Self.takeKept + 16000 * 10 { let excess = take.count - Self.takeKept; take.removeFirst(excess); takeDropped += excess }
-                peak = max(peak, chunk.reduce(0) { max($0, abs($1)) })
-                let rms = Self.rms(chunk[...])
-                if rms > 0.003 { voicedSeconds += Double(count) / 16000 }
-                recorded += Int64(count)
-                // A level for every 10 ms, so the stroke can move at the display's rate though audio arrives in 100 ms pieces.
-                meter(stride(from: 0, to: count, by: 160).map { start in Self.loudness(Self.rms(chunk[start..<min(start + 160, count)])) })
+                do {
+                    try file?.write(from: output)
+                    take.append(contentsOf: chunk)
+                    if take.count > Self.takeKept + 16000 * 10 { let excess = take.count - Self.takeKept; take.removeFirst(excess); takeDropped += excess }
+                    peak = max(peak, chunk.reduce(0) { max($0, abs($1)) })
+                    let rms = Self.rms(chunk[...])
+                    if rms > 0.003 { voicedSeconds += Double(count) / 16000 }
+                    recorded += Int64(count)
+                    // A level for every 10 ms, so the stroke can move at the display's rate though audio arrives in 100 ms pieces.
+                    meter(stride(from: 0, to: count, by: 160).map { start in Self.loudness(Self.rms(chunk[start..<min(start + 160, count)])) })
+                } catch { self.error = error; failed() }
             }
             ring.append(chunk)
             for event in activity.process(chunk) { report(event) }
@@ -249,14 +228,15 @@ private final class AudioSink: @unchecked Sendable {
         return sqrt(samples.reduce(0) { $0 + $1 * $1 } / Float(samples.count))
     }
     /// Starts writing to `url`. With a position, the file begins at that point of the stream,
-    /// taken from the ring, so the words said while "Ehi Verb" was being recognized are kept.
+    /// taken from the ring: the words said while "Ehi Verb" was being recognized, or since the
+    /// dictation keys went down, are kept.
     func beginRecording(url: URL, from position: Int?) throws {
         try queue.sync {
             let file = try AVAudioFile(forWriting: url, settings: [AVFormatIDKey: kAudioFormatLinearPCM, AVSampleRateKey: 16000, AVNumberOfChannelsKey: 1, AVLinearPCMBitDepthKey: 16, AVLinearPCMIsFloatKey: false, AVLinearPCMIsBigEndianKey: false], commonFormat: .pcmFormatFloat32, interleaved: false)
             // What you said: readable by you only.
             try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
-            error = nil; voicedSeconds = 0; recorded = 0; peak = 0
-            let earlier = position.map { ring.samples(from: $0, to: ring.end) } ?? []
+            error = nil; lost = 0; voicedSeconds = 0; recorded = 0; peak = 0
+            let earlier = position.map { ring.samples(from: max($0, ring.start), to: ring.end) } ?? []
             take = earlier; takeDropped = 0; takeStart = ring.end - earlier.count
             if !earlier.isEmpty, let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(earlier.count)), let channel = buffer.floatChannelData?[0] {
                 buffer.frameLength = AVAudioFrameCount(earlier.count)
@@ -280,14 +260,25 @@ private final class AudioSink: @unchecked Sendable {
     }
     /// Where a stream position falls in the take.
     func takeOffset(ofStream position: Int) -> Int { queue.sync { max(0, position - takeStart) } }
-    func endRecording() throws -> (Double, Double, Float) {
-        try queue.sync {
+    /// Closes the file, with the last moment the converter still held. What was recorded stays
+    /// even when the disk gave up partway; `problem` says so, and how much a slow disk let go.
+    func endRecording() -> (duration: Double, voiced: Double, peak: Float, problem: String?) {
+        queue.sync {
+            if let file, error == nil, let converter, let output = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: 4096) {
+                var flushError: NSError?
+                converter.convert(to: output, error: &flushError) { _, status in status.pointee = .endOfStream; return nil }
+                if flushError == nil, output.frameLength > 0, (try? file.write(from: output)) != nil { recorded += Int64(output.frameLength) }
+            }
+            converter?.reset()
             file = nil
             take = []; takeDropped = 0
             // What was said during the dictation, its closing command included, never counts afterwards.
             activity.restart()
-            if let error { self.error = nil; throw error }
-            return (Double(recorded) / 16000, voicedSeconds, peak)
+            var problem: String?
+            if error != nil { problem = "The disk stopped taking the recording, so it ended early. What you said until then is kept. Check the free space." }
+            else if lost >= 8000 { problem = "The disk couldn’t keep up: about \(max(1, Int((Double(lost) / 16000).rounded()))) s of this recording are missing." }
+            error = nil; lost = 0
+            return (Double(recorded) / 16000, voicedSeconds, peak, problem)
         }
     }
 }
@@ -296,76 +287,149 @@ private final class AudioSink: @unchecked Sendable {
 /// listening between them in memory only, so "Ehi Verb" can start one without losing the
 /// words that follow it.
 @MainActor final class Recorder {
-    private var engine: AVAudioEngine?
+    private var input: MicrophoneInput?
     private var sink: AudioSink?
+    /// What is open: the chosen microphone, or the system's, or a stand-in, with its identifier.
     private var device: String?
-    private var observer: NSObjectProtocol?
+    /// The microphone as chosen in Settings, empty for the system's.
+    private var choice = ""
     private var recording = false
     /// Whether the microphone stays open between dictations.
     private(set) var listening = false
+    /// Opened when the dictation keys went down, before the dictation itself starts.
+    private var prepared = false
+    private var restarts = RestartBudget()
+    private var soundCheck: Task<Void, Never>?
+    private static let log = Logger(subsystem: "app.verb.dictation", category: "audio")
     var onLevel: (([Float]) -> Void)?
     var onInterruption: (() -> Void)?
     var onSpeech: ((SpeechMoment) -> Void)?
+    /// The disk stopped taking the recording: the dictation ends now, with what it has.
+    var onFailure: (() -> Void)?
+    /// Another microphone took over, mid-dictation or because the chosen one is missing: its name.
+    var onFallback: ((String) -> Void)?
+    /// The microphone delivered no sound at all once the dictation began.
+    var onNoSound: (() -> Void)?
+    /// A microphone opened for a dictation took this long, in seconds, to send its first sound.
+    var onOpened: ((String, String, Double) -> Void)?
+    /// The device opened last, by its identifier.
+    private var openedID = ""
     /// With the system microphone chosen, use the Mac's own rather than Bluetooth headphones.
     var preferBuiltIn = true
-    var running: Bool { engine?.isRunning == true }
+    var running: Bool { input != nil }
     /// The name of the microphone in use, for messages.
     private(set) var inputName = ""
+    /// Where the microphone's stream is now; a dictation can start its file from here.
+    var position: Int { sink?.position ?? 0 }
 
     /// Opens the microphone between dictations, or reopens it after macOS stopped it for
     /// sleep or a device change. Calling it again costs nothing.
     func listen(deviceID: String) throws { listening = true; try open(deviceID) }
-    func stopListening() { listening = false; if !recording { close() } }
+    func stopListening() { listening = false; if !recording && !prepared { close() } }
+    /// Opens the microphone as the dictation keys go down, so the first word is heard while the
+    /// short wait that tells a dictation from a shortcut runs. Bluetooth headphones wait for the
+    /// dictation itself: opening their microphone switches them to call quality, for every press
+    /// of the keys.
+    func prepare(deviceID: String) {
+        guard !recording else { return }
+        if !running, Microphones.pick(deviceID, preferBuiltIn: preferBuiltIn)?.device.isBluetooth != false { return }
+        prepared = (try? open(deviceID)) != nil
+    }
+    /// The keys were for something else.
+    func release() {
+        guard prepared else { return }
+        prepared = false
+        if !recording && !listening { close() }
+    }
 
     /// Starts a dictation's file. With `from`, the file begins at that point of the stream.
     func start(url: URL, deviceID: String, from position: Int? = nil) throws {
+        let wasOpen = running, asked = Date()
         try open(deviceID)
         guard let sink else { throw VerbError("No microphone is available.") }
         try sink.beginRecording(url: url, from: position)
-        recording = true
+        recording = true; prepared = false; restarts.reset()
+        checkForSound(sink)
+        // Opened now rather than already open: how long it takes to send its first sound.
+        if !wasOpen {
+            let id = openedID, name = inputName, before = sink.received
+            Task { [weak self] in
+                for _ in 0..<80 {
+                    try? await Task.sleep(nanoseconds: 50_000_000)
+                    guard let self, self.sink === sink else { return }
+                    if sink.received > before { self.onOpened?(id, name, Date().timeIntervalSince(asked)); return }
+                }
+            }
+        }
     }
-    func stop() throws -> (duration: Double, voiced: Double, peak: Float) {
-        defer { recording = false; if !listening { close() } }
-        return try sink?.endRecording() ?? (0, 0, 0)
+    func stop() -> (duration: Double, voiced: Double, peak: Float, problem: String?) {
+        defer { recording = false; soundCheck?.cancel(); soundCheck = nil; if !listening { close() } }
+        return sink?.endRecording() ?? (0, 0, 0, nil)
     }
     /// What the current dictation has recorded from `offset` on, for the live preview.
     func take(from offset: Int) -> (samples: [Float], end: Int) { sink?.take(from: offset) ?? ([], 0) }
     func takeOffset(ofStream position: Int) -> Int { sink?.takeOffset(ofStream: position) ?? 0 }
 
     private func open(_ deviceID: String) throws {
-        // The system microphone may be headphones, where the Mac's own is kept instead.
-        let chosen = Microphones.effective(deviceID, preferBuiltIn: preferBuiltIn)
-        let key = deviceID.isEmpty ? "system:" + (chosen?.id ?? "") : deviceID
+        // The system microphone may be headphones, where the Mac's own is kept instead. A chosen
+        // microphone that is missing gives way to the system's, and says so.
+        guard let pick = Microphones.pick(deviceID, preferBuiltIn: preferBuiltIn) else { throw VerbError("No microphone is available.") }
+        let key = deviceID.isEmpty ? "system:" + pick.device.id : pick.standIn ? "instead:" + pick.device.id : deviceID
         if running, device == key { return }
         guard !recording else { return }
         close()
-        let engine = AVAudioEngine()
-        let input = engine.inputNode
-        if !deviceID.isEmpty || chosen?.id != Microphones.systemDefault()?.id {
-            guard var device = chosen?.deviceID, let unit = input.audioUnit else { throw VerbError("The selected microphone is disconnected. Choose another input in Settings.") }
-            guard AudioUnitSetProperty(unit, kAudioOutputUnitProperty_CurrentDevice, kAudioUnitScope_Global, 0, &device, UInt32(MemoryLayout<AudioDeviceID>.size)) == noErr else { throw VerbError("Could not select that microphone.") }
-        }
-        inputName = chosen?.name ?? ""
-        let format = input.outputFormat(forBus: 0)
-        guard format.sampleRate > 0, format.channelCount > 0 else { throw VerbError("No microphone is available.") }
-        let sink = try AudioSink(input: format, meter: { [weak self] values in Task { @MainActor in self?.onLevel?(values) } },
-                                 heard: { [weak self] moment in Task { @MainActor in self?.onSpeech?(moment) } })
-        // macOS delivers an input tap's audio every 100 ms at best, whatever size is asked for.
-        input.installTap(onBus: 0, bufferSize: AVAudioFrameCount(format.sampleRate / 10), format: format) { buffer, _ in sink.consume(buffer) }
-        do { engine.prepare(); try engine.start() } catch { input.removeTap(onBus: 0); throw error }
-        self.engine = engine; self.sink = sink; device = key
-        observer = NotificationCenter.default.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in Task { @MainActor in self?.configurationChanged() } }
+        let sink = AudioSink(meter: { [weak self] values in Task { @MainActor in self?.onLevel?(values) } },
+                             heard: { [weak self] moment in Task { @MainActor in self?.onSpeech?(moment) } },
+                             failed: { [weak self] in Task { @MainActor in self?.onFailure?() } })
+        try attach(pick.device, to: sink)
+        self.sink = sink; device = key; choice = deviceID; restarts.reset()
+        if pick.standIn { onFallback?(pick.device.name) }
     }
-    /// A device came or went. A dictation ends with what it has; listening resumes on the new input.
-    private func configurationChanged() {
-        if recording { onInterruption?() }
-        guard !recording else { return }
-        let current = device.map { $0.hasPrefix("system:") ? "" : $0 } ?? ""
+    /// Opens `microphone` and sends what it hears to `sink`.
+    private func attach(_ microphone: MicrophoneDevice, to sink: AudioSink) throws {
+        let input = try MicrophoneInput(microphone) { buffer in sink.consume(buffer) }
+        try sink.use(input: input.format)
+        input.onChange = { [weak self] change in MainActor.assumeIsolated { self?.changed(change) } }
+        try input.start()
+        self.input = input; inputName = microphone.name; openedID = microphone.id
+    }
+    /// The device went away or changed its format, and its input stopped. A dictation goes on
+    /// into the same file: on the same microphone if it is still there, or on the one Verb would
+    /// pick now, which is then named. A device that keeps changing is given up on, and the
+    /// dictation ends with what it has. Listening resumes on whichever microphone is right now.
+    private func changed(_ change: MicrophoneInput.Change) {
+        let previous = input?.device
+        input = nil
+        guard let sink else { return }
+        if recording {
+            guard restarts.allow(at: Date().timeIntervalSinceReferenceDate) else {
+                Self.log.error("Microphone keeps changing: dictation ended")
+                onInterruption?(); return
+            }
+            if change == .format, let previous, let same = Microphones.list().first(where: { $0.deviceID == previous.deviceID }),
+               (try? attach(same, to: sink)) != nil { return }
+            if let pick = Microphones.pick(choice, preferBuiltIn: preferBuiltIn), (try? attach(pick.device, to: sink)) != nil {
+                if pick.device.deviceID != previous?.deviceID { onFallback?(pick.device.name) }
+                return
+            }
+            onInterruption?()
+            return
+        }
         close()
-        if listening { try? open(current) }
+        if listening { try? open(choice) }
+    }
+    /// A device can open and send nothing at all. Said once, a moment after the dictation began.
+    private func checkForSound(_ sink: AudioSink) {
+        soundCheck?.cancel()
+        let before = sink.received
+        soundCheck = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard let self, !Task.isCancelled, self.recording, self.sink === sink, sink.received == before else { return }
+            Self.log.error("Microphone sent no sound")
+            self.onNoSound?()
+        }
     }
     private func close() {
-        if let observer { NotificationCenter.default.removeObserver(observer) }; observer = nil
-        engine?.stop(); engine?.inputNode.removeTap(onBus: 0); engine = nil; sink = nil; device = nil
+        input?.stop(); input = nil; sink = nil; device = nil; prepared = false
     }
 }

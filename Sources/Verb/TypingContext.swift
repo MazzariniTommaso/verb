@@ -8,9 +8,13 @@ import CoreGraphics
 /// hide their keys from every app, Verb included.
 @MainActor final class TypingContext {
     /// Set on the key events Verb posts itself (⌘V, ⌘C, arrows), so they are not taken for typing.
-    static let marker: Int64 = 0x5645_5242
+    nonisolated static let marker: Int64 = 0x5645_5242
     private var tail = ""
     private var app: pid_t = 0
+    /// When each character was typed in the app in front over the last minute: only how many, never which.
+    private var moments: [Date] = []
+    /// Characters typed by hand in the app in front over the last minute.
+    var recentCount: Int { moments.filter { Date().timeIntervalSince($0) < 60 }.count }
 
     /// The text just before the cursor in the app, when Verb can vouch for it.
     func before(in pid: pid_t) -> String? { app == pid && !tail.isEmpty ? tail : nil }
@@ -27,7 +31,7 @@ import CoreGraphics
     /// A key that reached an app.
     func typed(_ event: CGEvent) {
         let front = NSWorkspace.shared.frontmostApplication?.processIdentifier ?? 0
-        if front != app { app = front; tail = "" }
+        if front != app { app = front; tail = ""; moments = [] }
         // Shortcuts (⌘V of something unknown, ⌘Z, ⌘←) move or change what Verb can't see.
         if !event.flags.intersection([.maskCommand, .maskControl]).isEmpty { tail = ""; return }
         switch event.getIntegerValueField(.keyboardEventKeycode) {
@@ -41,6 +45,8 @@ import CoreGraphics
             let typed = String(utf16CodeUnits: characters, count: length)
             guard !typed.isEmpty, !typed.unicodeScalars.contains(where: { $0.properties.generalCategory == .control }) else { return }
             tail = String((tail + typed).suffix(40))
+            moments.append(Date())
+            if moments.count > 400 { moments.removeFirst(moments.count - 300) }
         }
     }
 }

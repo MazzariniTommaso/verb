@@ -42,3 +42,38 @@ final class WindowedReadTests: XCTestCase {
         XCTAssertEqual(reader.duration, Double(whole.count) / 16000, accuracy: 0.05)
     }
 }
+
+/// Installing models from Hugging Face: what counts as a complete, untampered folder.
+final class SpeechModelInstallTests: XCTestCase {
+    var folder: URL!
+    override func setUpWithError() throws {
+        folder = FileManager.default.temporaryDirectory.appendingPathComponent("verb-model-" + UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+    }
+    override func tearDownWithError() throws { try? FileManager.default.removeItem(at: folder) }
+
+    func testFilesAreCheckedAgainstTheHashTheRepositoryPublishes() throws {
+        let file = folder.appendingPathComponent("vocab.txt")
+        try Data("hello".utf8).write(to: file)
+        // `git hash-object` and `shasum -a 256` of "hello".
+        XCTAssertTrue(try SpeechModelInstaller.matches(file, HubFile(path: "vocab.txt", size: 5, gitSHA1: "b6fc4c620b67d95f953a5c1c1230aaab5db5a1b0", sha256: nil)))
+        XCTAssertTrue(try SpeechModelInstaller.matches(file, HubFile(path: "vocab.txt", size: 5, gitSHA1: "pointer", sha256: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824")))
+        XCTAssertFalse(try SpeechModelInstaller.matches(file, HubFile(path: "vocab.txt", size: 5, gitSHA1: "0000000000000000000000000000000000000000", sha256: nil)))
+        XCTAssertFalse(try SpeechModelInstaller.matches(file, HubFile(path: "vocab.txt", size: 6, gitSHA1: "b6fc4c620b67d95f953a5c1c1230aaab5db5a1b0", sha256: nil)), "A wrong size fails before any hashing")
+    }
+    func testAFolderIsCompleteOnlyWithItsRecordAndEveryFile() throws {
+        try Data(#"{"model_type": "cohere_asr"}"#.utf8).write(to: folder.appendingPathComponent("config.json"))
+        XCTAssertEqual(try SpeechModels.architecture(of: folder), .cohere)
+        XCTAssertNil(SpeechModelInstaller.record(in: folder), "No record yet: the download may have stopped halfway")
+        let record = SpeechModelInstaller.Record(repository: "owner/model", revision: "abc", architecture: .cohere, files: [HubFile(path: "config.json", size: 28, gitSHA1: "x", sha256: nil), HubFile(path: "model.safetensors", size: 4, gitSHA1: "y", sha256: "z")], companion: nil)
+        try JSONEncoder().encode(record).write(to: folder.appendingPathComponent(SpeechModelInstaller.recordName))
+        XCTAssertNil(SpeechModelInstaller.record(in: folder), "The weights are missing")
+        try Data("abcd".utf8).write(to: folder.appendingPathComponent("model.safetensors"))
+        XCTAssertEqual(SpeechModelInstaller.record(in: folder), record)
+    }
+    func testWhisperTokenizersComeFromTheMatchingOriginal() {
+        XCTAssertEqual(SpeechModelInstaller.whisperTokenizerRepository(config: Data(#"{"n_vocab": 51866}"#.utf8)), "openai/whisper-large-v3")
+        XCTAssertEqual(SpeechModelInstaller.whisperTokenizerRepository(config: Data(#"{"vocab_size": 51865}"#.utf8)), "openai/whisper-medium")
+        XCTAssertEqual(SpeechModelInstaller.whisperTokenizerRepository(config: Data(#"{"n_vocab": 51864}"#.utf8)), "openai/whisper-medium.en")
+    }
+}

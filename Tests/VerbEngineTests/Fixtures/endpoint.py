@@ -1,7 +1,8 @@
 #!/usr/bin/python3
 # A local OpenAI-compatible server for the engine tests. Chat completions answer with the text
-# they were sent; the reasoning route refuses temperature and max_tokens with OpenAI's own
-# errors; the download drops its first connection partway. Every request is logged as JSON.
+# they were sent, streamed in pieces when asked to; the reasoning route refuses temperature and
+# max_tokens with OpenAI's own errors; the download drops its first connection partway. Every
+# request is logged as JSON.
 import hashlib,json,socket,sys
 from http.server import ThreadingHTTPServer,BaseHTTPRequestHandler
 log=open(sys.argv[1],'a',buffering=1)
@@ -22,7 +23,13 @@ class Handler(BaseHTTPRequestHandler):
     if key in body:return self.reply(400,{'error':{'message':message,'type':'invalid_request_error','param':key,'code':'unsupported_parameter'}})
    assert body['max_completion_tokens']>0
   if self.path.startswith('/invalid/'):return self.reply(400,{'error':{'message':'Invalid model name.','type':'invalid_request_error'}})
-  self.reply(200,{'choices':[{'message':{'content':json.loads(body['messages'][1]['content'])['text']},'finish_reason':'stop'}]})
+  sent=json.loads(body['messages'][1]['content']);text=sent.get('text') or sent.get('request')
+  if body.get('stream'):
+   self.send_response(200);self.send_header('Content-Type','text/event-stream');self.end_headers()
+   for piece in [text[:len(text)//2],text[len(text)//2:]]:
+    self.wfile.write(('data: '+json.dumps({'choices':[{'delta':{'content':piece}}]})+'\n\n').encode());self.wfile.flush()
+   self.wfile.write(b'data: [DONE]\n\n');return
+  self.reply(200,{'choices':[{'message':{'content':text},'finish_reason':'stop'}]})
  def do_GET(self):
   log.write(json.dumps({'path':self.path,'range':self.headers.get('Range')})+'\n')
   start=int(self.headers['Range'].split('=')[1].split('-')[0]) if self.headers.get('Range') else 0

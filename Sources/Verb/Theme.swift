@@ -20,15 +20,25 @@ func durationLabel(_ seconds: Double) -> String { let seconds = max(0, Int(secon
 
 // MARK: - Surfaces
 
+/// Cards side by side take the height of the tallest.
+private struct CardsMatchKey: EnvironmentKey { static let defaultValue = false }
+extension EnvironmentValues {
+    var cardsMatchHeight: Bool {
+        get { self[CardsMatchKey.self] }
+        set { self[CardsMatchKey.self] = newValue }
+    }
+}
+
 /// A sheet of card stock laid on the page. `lifted` is kept for the one thing a page leads with.
 struct Card<Content: View>: View {
     var padding: CGFloat = Space.xl
     var lifted = false
     @ViewBuilder var content: Content
+    @Environment(\.cardsMatchHeight) private var matchHeight
     var body: some View {
         VStack(alignment: .leading, spacing: 0) { content }
             .padding(padding)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, maxHeight: matchHeight ? .infinity : nil, alignment: .topLeading)
             // The sheet casts the shadow, not every word and button on it.
             .background(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous).fill(Palette.surfaceRaised)
                 .shadow(color: lifted ? Palette.shadow.opacity(0.45) : .clear, radius: lifted ? 18 : 0, y: lifted ? 8 : 0))
@@ -45,6 +55,8 @@ struct RowList<Content: View>: View {
             .background(Palette.surfaceRaised)
             .clipShape(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous))
             .overlay(RoundedRectangle(cornerRadius: Radius.lg, style: .continuous).strokeBorder(Palette.borderSubtle))
+            // One stop for the keyboard as a whole, so a long list is quick to pass over.
+            .focusSection()
     }
 }
 
@@ -52,17 +64,45 @@ struct Hairline: View {
     var body: some View { Rectangle().fill(Palette.borderSubtle).frame(height: 1).accessibilityHidden(true) }
 }
 
-/// Scrolls a page and keeps its column at a readable width.
+/// Scrolls a page. Its column starts at the margin, by the sidebar, and stops at `cap`: what is
+/// left of a wide window goes to the trailing side, so the page's edge never moves as the window
+/// grows, nor from one page to the next.
 struct PageScroll<Content: View>: View {
+    var cap: CGFloat = Sizing.contentMax
     @ViewBuilder var content: Content
+    @Environment(\.pageLayout) private var layout
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Space.xxl) { content }
-                .padding(.horizontal, Space.page)
-                .padding(.top, Space.xxxl + Space.xs)
+                .frame(maxWidth: cap, alignment: .leading)
+                .padding(.horizontal, layout.margin)
+                .padding(.top, Sizing.pageTop)
                 .padding(.bottom, Space.huge)
-                .frame(maxWidth: Sizing.contentMax + Space.page * 2, alignment: .leading)
-                .frame(maxWidth: .infinity)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+}
+
+extension View {
+    /// A paragraph's measure, about 90 characters, however wide its card.
+    func measure() -> some View { frame(maxWidth: Sizing.columnParagraph, alignment: .leading) }
+}
+
+/// Views side by side, each as wide as the widest needs: their ideal width says so, so a
+/// `ViewThatFits` moves on when one of them would lose its words.
+struct EqualWidths: Layout {
+    var spacing: CGFloat = 0
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard !subviews.isEmpty else { return .zero }
+        let ideal = subviews.map { $0.sizeThatFits(.unspecified) }
+        let needed = (ideal.map(\.width).max() ?? 0) * CGFloat(subviews.count) + spacing * CGFloat(subviews.count - 1)
+        return CGSize(width: proposal.width ?? needed, height: ideal.map(\.height).max() ?? 0)
+    }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        guard !subviews.isEmpty else { return }
+        let width = (bounds.width - spacing * CGFloat(subviews.count - 1)) / CGFloat(subviews.count)
+        for (index, subview) in subviews.enumerated() {
+            subview.place(at: CGPoint(x: bounds.minX + CGFloat(index) * (width + spacing), y: bounds.minY), proposal: ProposedViewSize(width: width, height: bounds.height))
         }
     }
 }
@@ -98,16 +138,23 @@ struct PageHeader<Accessory: View>: View {
     let detail: String?
     @ViewBuilder var accessory: Accessory
     var body: some View {
-        // Title and buttons side by side while both fit; in a narrow window the buttons go under
-        // the title, whole, rather than lose their words.
-        ViewThatFits(in: .horizontal) {
-            HStack(alignment: .titleLine, spacing: Space.xl) {
-                heading.frame(minWidth: 240, idealWidth: 240, maxWidth: .infinity, alignment: .leading)
-                accessory.fixedSize().alignmentGuide(.titleLine) { $0[VerticalAlignment.center] }
+        VStack(alignment: .leading, spacing: Space.sm) {
+            // Title and buttons side by side while both fit; in a narrow window the buttons go under
+            // the title, whole, rather than lose their words. The description runs under both, at
+            // its own width, so the buttons never squeeze it.
+            ViewThatFits(in: .horizontal) {
+                HStack(alignment: .titleLine, spacing: Space.xl) {
+                    heading.frame(minWidth: 240, idealWidth: 240, maxWidth: .infinity, alignment: .leading)
+                    accessory.fixedSize().alignmentGuide(.titleLine) { $0[VerticalAlignment.center] }
+                }
+                VStack(alignment: .leading, spacing: Space.lg) {
+                    heading
+                    accessory.fixedSize()
+                }
             }
-            VStack(alignment: .leading, spacing: Space.lg) {
-                heading
-                accessory.fixedSize()
+            if let detail {
+                Text(detail).font(Typeface.text(TypeSize.body)).foregroundStyle(Palette.textSecondary).lineSpacing(leading(TypeSize.body, Leading.ui))
+                    .frame(maxWidth: 540, alignment: .leading).fixedSize(horizontal: false, vertical: true)
             }
         }
     }
@@ -120,10 +167,6 @@ struct PageHeader<Accessory: View>: View {
             Text(title).font(Typeface.display(TypeSize.title1)).tracking(Tracking.display).foregroundStyle(Palette.textPrimary)
                 .fixedSize(horizontal: false, vertical: true).accessibilityAddTraits(.isHeader)
                 .alignmentGuide(.titleLine) { $0[VerticalAlignment.center] }
-            if let detail {
-                Text(detail).font(Typeface.text(TypeSize.body)).foregroundStyle(Palette.textSecondary).lineSpacing(leading(TypeSize.body, Leading.ui))
-                    .frame(maxWidth: 540, alignment: .leading).fixedSize(horizontal: false, vertical: true)
-            }
         }
         // The tour leaves the title of the page it shows uncovered; its buttons stay under the shade.
         .tourAnchor(.header)
@@ -166,6 +209,8 @@ private struct VerbButtonBody: View {
     let kind: VerbButtonStyle.Kind
     let compact: Bool
     @Environment(\.isEnabled) private var enabled
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.colorSchemeContrast) private var contrast
     @State private var hovering = false
     private var shape: RoundedRectangle { RoundedRectangle(cornerRadius: Radius.md, style: .continuous) }
     var body: some View {
@@ -175,21 +220,24 @@ private struct VerbButtonBody: View {
             .foregroundStyle(foreground)
             .underline(kind == .link && hovering)
             .padding(.horizontal, kind == .link ? 0 : (compact ? Space.md : Space.base))
-            .frame(minHeight: compact ? 28 : 34)
+            .frame(minHeight: compact ? 26 : 30)
             .background(fill, in: shape)
             .overlay { if let border { shape.strokeBorder(border) } }
+            // The keyboard focus ring follows the button you see, not its larger hit area.
+            .contentShape(.focusEffect, shape)
             // The visible button stays trim; the hit area keeps the 44 pt minimum.
             .frame(minHeight: Sizing.controlMin)
             .contentShape(Rectangle())
-            .scaleEffect(configuration.isPressed && kind != .link ? 0.98 : 1)
-            .opacity(enabled ? 1 : 0.4)
+            .scaleEffect(configuration.isPressed && kind != .link && !reduceMotion ? 0.98 : 1)
+            // A primary button that can't be used yet is drawn as a quiet outline, not as faded ink.
+            .opacity(enabled || kind == .primary ? 1 : 0.4)
             .animation(.easeOut(duration: Motion.fast), value: hovering)
             .animation(.easeOut(duration: Motion.fast), value: configuration.isPressed)
-            .onHover { hovering = $0 && enabled }
+            .onPointerOver { hovering = $0 && enabled }
     }
     private var foreground: Color {
         switch kind {
-        case .primary: return Palette.textOnInverse
+        case .primary: return enabled ? Palette.textOnInverse : Palette.textTertiary
         case .secondary, .quiet: return Palette.textPrimary
         case .danger, .dangerQuiet: return Palette.danger
         case .link: return configuration.isPressed ? Palette.accentStrong : Palette.accent
@@ -198,7 +246,7 @@ private struct VerbButtonBody: View {
     private var fill: Color {
         let pressed = configuration.isPressed
         switch kind {
-        case .primary: return hovering || pressed ? Palette.surfaceInverseHover : Palette.surfaceInverse
+        case .primary: return !enabled ? Palette.surfaceRaised : hovering || pressed ? Palette.surfaceInverseHover : Palette.surfaceInverse
         case .secondary: return pressed ? Palette.fillPressed : (hovering ? Palette.fillHover : Palette.surfaceRaised)
         case .quiet: return pressed ? Palette.fillPressed : (hovering ? Palette.fillHover : .clear)
         case .danger, .dangerQuiet: return pressed ? Palette.fillPressed : (hovering ? Palette.fillHover : .clear)
@@ -207,11 +255,46 @@ private struct VerbButtonBody: View {
     }
     private var border: Color? {
         switch kind {
+        case .primary: return enabled ? nil : Palette.borderSubtle
         case .secondary: return Palette.borderSubtle
-        case .danger: return Palette.danger.opacity(0.4)
+        case .danger: return Palette.danger.opacity(contrast == .increased ? 1 : 0.4)
         default: return nil
         }
     }
+}
+
+/// Whether the pointer is over a view, from an AppKit tracking area as large as the view.
+/// SwiftUI's own hover is lost over parts of some controls: a button lit only while the pointer
+/// crossed its edge, and not when it rested in the middle.
+private struct PointerOver: NSViewRepresentable {
+    let changed: (Bool) -> Void
+    func makeNSView(context: Context) -> TrackingView { let view = TrackingView(); view.changed = changed; return view }
+    func updateNSView(_ view: TrackingView, context: Context) { view.changed = changed }
+
+    final class TrackingView: NSView {
+        var changed: (Bool) -> Void = { _ in }
+        private var inside = false
+        override func updateTrackingAreas() {
+            super.updateTrackingAreas()
+            for area in trackingAreas { removeTrackingArea(area) }
+            addTrackingArea(NSTrackingArea(rect: .zero, options: [.mouseEnteredAndExited, .activeAlways, .inVisibleRect], owner: self))
+            // Appearing under a still pointer counts as being entered.
+            if let window { set(bounds.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil))) }
+        }
+        override func mouseEntered(with event: NSEvent) { set(true) }
+        override func mouseExited(with event: NSEvent) { set(false) }
+        override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); if window == nil { set(false) } }
+        // Clicks go to the control on top, never here.
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+        private func set(_ value: Bool) {
+            guard value != inside else { return }
+            inside = value; changed(value)
+        }
+    }
+}
+extension View {
+    /// Says when the pointer comes over the view and leaves it, anywhere in its frame.
+    func onPointerOver(_ changed: @escaping (Bool) -> Void) -> some View { background(PointerOver(changed: changed)) }
 }
 
 /// For rows and cards that are buttons: dims on press and when disabled, nothing else.
@@ -259,9 +342,18 @@ struct SettingRow<Control: View>: View {
     var detail: String? = nil
     @ViewBuilder var control: Control
     var body: some View {
-        HStack(alignment: .center, spacing: Space.base) {
-            RowLabel(title: title, detail: detail)
-            control
+        // Side by side while the control keeps its words beside a label of fair width; under the
+        // label otherwise, at its leading edge.
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .center, spacing: Space.base) {
+                // Measured at a fair width, so a long description wraps rather than push the control under.
+                RowLabel(title: title, detail: detail).frame(minWidth: 160, idealWidth: 220, maxWidth: .infinity, alignment: .leading)
+                control
+            }
+            VStack(alignment: .leading, spacing: Space.sm) {
+                RowLabel(title: title, detail: detail)
+                control
+            }
         }
         .padding(.vertical, Space.sm)
         .frame(minHeight: Sizing.controlMin)
@@ -296,9 +388,13 @@ private struct InkSwitch: View {
     var body: some View {
         Button { configuration.isOn.toggle() } label: {
             ZStack(alignment: configuration.isOn ? .trailing : .leading) {
+                // Off, the track has a full border and the knob a ring of its own, so the state reads
+                // without the colour of on.
                 Capsule().fill(configuration.isOn ? Palette.controlOn : Palette.fillPressed)
-                    .overlay(Capsule().strokeBorder(configuration.isOn ? Color.clear : Palette.borderStrong.opacity(0.55)))
-                Circle().fill(configuration.isOn ? Palette.controlKnobOn : Palette.controlKnob).shadow(color: Palette.shadow, radius: 1.5, y: 1).padding(2.5)
+                    .overlay(Capsule().strokeBorder(configuration.isOn ? Color.clear : Palette.borderStrong, lineWidth: 1.5))
+                Circle().fill(configuration.isOn ? Palette.controlKnobOn : Palette.controlKnob)
+                    .overlay(Circle().strokeBorder(configuration.isOn ? Color.clear : Palette.borderStrong.opacity(0.7), lineWidth: 1))
+                    .shadow(color: Palette.shadow, radius: 1.5, y: 1).padding(3)
             }
             .frame(width: 40, height: 24)
             .frame(minWidth: Sizing.controlMin, minHeight: Sizing.controlMin)
@@ -327,7 +423,7 @@ struct EditableRow<Content: View>: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(PlainPressStyle())
-        .onHover { hovering = $0 }
+        .onPointerOver { hovering = $0 }
         .accessibilityHint(hint)
     }
 }
@@ -388,7 +484,7 @@ private struct ChoiceCard: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(PlainPressStyle())
-        .onHover { hovering = $0 }
+        .onPointerOver { hovering = $0 }
         .animation(.easeOut(duration: Motion.fast), value: selected)
         .accessibilityAddTraits(selected ? [.isSelected] : [])
     }
@@ -415,6 +511,8 @@ struct Segmented<Value: Hashable>: View {
                     .padding(.horizontal, iconOnly ? 0 : Space.md)
                     .frame(maxWidth: .infinity, minHeight: 28)
                     .background(selected ? Palette.surfaceSelected : .clear, in: RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
+                    // The choice has an edge in the colour of on, so it shows in the dark and with low contrast too.
+                    .overlay(RoundedRectangle(cornerRadius: Radius.sm, style: .continuous).strokeBorder(selected ? Palette.controlOn.opacity(0.85) : .clear, lineWidth: 1.25))
                     .shadow(color: selected ? Palette.shadow.opacity(0.4) : .clear, radius: 1.5, y: 1)
                     .contentShape(Rectangle())
                 }
@@ -471,16 +569,19 @@ struct EmptyState: View {
     let symbol: String
     let title: String
     let detail: String
+    /// The way out of the empty state, when there is one: add the first, restore, choose.
+    var action: (title: String, perform: () -> Void)? = nil
     var body: some View {
         VStack(spacing: Space.md) {
             Image(systemName: symbol).font(.system(size: 26, weight: .light)).foregroundStyle(Palette.textTertiary).accessibilityHidden(true)
             Text(title).font(Typeface.display(TypeSize.title3)).foregroundStyle(Palette.textPrimary).multilineTextAlignment(.center)
             Text(detail).font(Typeface.text(TypeSize.body)).foregroundStyle(Palette.textSecondary).multilineTextAlignment(.center).lineSpacing(3)
                 .frame(maxWidth: 380).fixedSize(horizontal: false, vertical: true)
+            if let action { Button(action.title, action: action.perform).buttonStyle(VerbButtonStyle(kind: .secondary)).padding(.top, Space.xs) }
         }
         .frame(maxWidth: .infinity, minHeight: 200)
         .padding(Space.xl)
-        .accessibilityElement(children: .combine)
+        .accessibilityElement(children: .contain)
     }
 }
 
@@ -508,13 +609,23 @@ struct FieldLabel: View {
     var body: some View { Text(text).font(Typeface.text(TypeSize.footnote, .medium)).foregroundStyle(Palette.textSecondary) }
 }
 
+/// A field's edge: a hairline of the 3:1 colour at rest, so an empty field is not the boldest
+/// thing on the page, and 2 pt of ink when it has the keys. `sunken` sets it into its card
+/// with no edge at rest, as the search in the notes.
 private struct FieldFrame: ViewModifier {
     let focused: Bool
+    var sunken = false
+    @State private var hovering = false
     func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: Radius.md, style: .continuous)
+        let lit = hovering && !focused
         content
-            .background(Palette.surfaceRaised, in: RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-            .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous).strokeBorder(focused ? Palette.controlOn : Palette.borderStrong, lineWidth: focused ? 2 : 1))
+            // Under the pointer the field darkens a little and its edge firms up, as buttons do.
+            .background { ZStack { shape.fill(sunken ? Palette.surfaceSunken : Palette.surfaceRaised); shape.fill(lit ? Palette.fillHover : .clear) } }
+            .overlay(shape.strokeBorder(focused ? Palette.controlOn : (lit ? Palette.textSecondary : (sunken ? .clear : Palette.borderStrong)), lineWidth: focused ? 2 : (lit ? 1 : 0.75)))
+            .onPointerOver { hovering = $0 }
             .animation(.easeOut(duration: Motion.fast), value: focused)
+            .animation(.easeOut(duration: Motion.fast), value: hovering)
     }
 }
 
@@ -531,7 +642,8 @@ struct VerbField: View {
         VStack(alignment: .leading, spacing: 6) {
             if showsLabel { FieldLabel(text: label) }
             Group {
-                if secure { SecureField(label, text: $text, prompt: Text(prompt)) } else { TextField(label, text: $text, prompt: Text(prompt)) }
+                // Placeholders in the tertiary ink, legible where they say what an empty field means.
+                if secure { SecureField(label, text: $text, prompt: Text(prompt).foregroundColor(Palette.textTertiary)) } else { TextField(label, text: $text, prompt: Text(prompt).foregroundColor(Palette.textTertiary)) }
             }
             .textFieldStyle(.plain)
             .font(mono ? Typeface.mono(TypeSize.body) : Typeface.text(TypeSize.body))
@@ -548,6 +660,8 @@ struct SearchField: View {
     @Binding var text: String
     let prompt: String
     let clearLabel: String
+    /// Set into a card, as in the notes, rather than standing on the page.
+    var sunken = false
     @FocusState private var focused: Bool
     var body: some View {
         HStack(spacing: Space.sm) {
@@ -556,8 +670,10 @@ struct SearchField: View {
             if !text.isEmpty { IconButton(symbol: "xmark.circle.fill", label: clearLabel) { text = "" }.foregroundStyle(Palette.textTertiary) }
         }
         .padding(.horizontal, Space.md)
-        .frame(minHeight: 40)
-        .modifier(FieldFrame(focused: focused))
+        .frame(minHeight: sunken ? 34 : 40)
+        .modifier(FieldFrame(focused: focused, sunken: sunken))
+        // As long as a search needs, not as long as the page.
+        .frame(maxWidth: Sizing.searchWidth, alignment: .leading)
     }
 }
 
@@ -579,5 +695,37 @@ struct VerbEditor: View {
             .padding(Space.sm)
             .frame(minHeight: minHeight)
             .modifier(FieldFrame(focused: focused))
+    }
+}
+
+/// A choice from a list, drawn like Verb's own fields instead of the system's pop-up button,
+/// which ignores the palette: the chosen value and a chevron on paper, opening the system's
+/// menu with the choice ticked.
+struct VerbPicker<Value: Hashable>: View {
+    let title: String
+    @Binding var selection: Value
+    let options: [(value: Value, label: String)]
+    @Environment(\.isEnabled) private var enabled
+    private var current: String { options.first { $0.value == selection }?.label ?? "" }
+    var body: some View {
+        Menu {
+            Picker(title, selection: $selection) {
+                ForEach(options.indices, id: \.self) { index in Text(options[index].label).tag(options[index].value) }
+            }
+            .pickerStyle(.inline).labelsHidden()
+        } label: {
+            HStack(spacing: Space.sm) {
+                Text(current).font(Typeface.text(TypeSize.body)).foregroundStyle(Palette.textPrimary).lineLimit(1).truncationMode(.middle)
+                Spacer(minLength: Space.xs)
+                Image(systemName: "chevron.up.chevron.down").font(.system(size: 10, weight: .semibold)).foregroundStyle(Palette.textSecondary)
+            }
+            .padding(.horizontal, Space.md).frame(height: 30)
+            .background(Palette.surfaceRaised, in: RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
+            .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous).strokeBorder(Palette.borderStrong.opacity(0.6)))
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden)
+        .opacity(enabled ? 1 : 0.5)
+        .accessibilityLabel(title).accessibilityValue(current)
     }
 }

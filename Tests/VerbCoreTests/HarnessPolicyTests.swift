@@ -23,4 +23,24 @@ final class HarnessPolicyTests: XCTestCase {
         for value in ["", "--model", "two words", "model\ncommand"] { XCTAssertThrowsError(try HarnessPolicy.validateModel(value)) }
         try HarnessPolicy.validateModel("claude-opus-5[1m]")
     }
+    func testAFailedCLISaysWhyFromWhatItPrinted() {
+        let codex = """
+        {"type":"thread.started","thread_id":"0199"}
+        {"type":"turn.started"}
+        {"type":"error","message":"You've hit your usage limit. Try again at 11:05."}
+        {"type":"turn.failed","error":{"message":"You've hit your usage limit. Try again at 11:05."}}
+        """
+        XCTAssertEqual(HarnessPolicy.failureReason(output: codex), "You've hit your usage limit. Try again at 11:05.")
+        XCTAssertEqual(HarnessPolicy.failureReason(output: #"{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Model not available"}"#), "Model not available")
+        XCTAssertEqual(HarnessPolicy.failureReason(output: "Loading…\nerror: unknown model gpt-x\n"), "error: unknown model gpt-x")
+        XCTAssertNil(HarnessPolicy.failureReason(output: ""))
+        XCTAssertNil(HarnessPolicy.failureReason(output: #"{"type":"turn.started"}"#), "an event that names no error says nothing")
+        let account = """
+        {
+          "loggedIn": false,
+          "authMethod": "none"
+        }
+        """
+        XCTAssertEqual(HarnessPolicy.failureReason(output: account), HarnessPolicy.notSignedIn, "an account check over several lines, with no one signed in")
+    }
 }

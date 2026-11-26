@@ -29,11 +29,11 @@ These are what make Verb trustworthy. A change that breaks one of them won't be 
 ```sh
 bash scripts/build.sh            # release/Verb.app
 open release/Verb.app
-swift test                       # 122 tests
+swift test                       # 240 tests
 ```
 
 - `scripts/build.sh` refuses to run while Verb is open. Quit it first with `osascript -e 'tell application id "app.verb.dictation" to quit'`.
-- Every rebuild is signed ad hoc, so macOS can ask for Microphone and Accessibility again. If the Accessibility switch is on but Verb says it's off, remove Verb from the list and add the new build.
+- Every rebuild is signed ad hoc, so macOS can ask for Microphone and Accessibility again. If the Accessibility switch is on but Verb says it's off, remove Verb from the list and add the new build. With `VERB_SIGN_IDENTITY` set to a certificate in your keychain, every build is signed the same way and the permissions stay.
 - Hotkeys and the microphone are global. **Don't run two full instances.** To look at the UI, use the snapshot renderer; to try flows, use the scripted checks. The renderer and the welcome check run from `.build/release/Verb` with a throwaway profile, with no microphone, hotkey or model; the notepad check and the field probe need the app bundle, through `open -n -g release/Verb.app --args …`.
 - `--data-dir /tmp/verb-profile` runs the app on an isolated profile instead of your own data, with its own Keychain entries.
 
@@ -78,10 +78,17 @@ Views bind to the accessor (`$model.settings.duckAudio`). `AppModel.persistSetti
 - **Paper and ink.** Ink is the primary action colour, and a page has at most one primary button: the next thing to do. Red pencil (`Palette.accent`) is reserved for the brand, live recording, rubrics and links. New York (`Typeface.display`) is for titles and for the user's own words; SF (`Typeface.text`) is for everything else.
 - **Accessibility.**
   - Icon-only controls get a label.
-  - Buttons answer across at least `Sizing.controlMin` (44 pt), whatever they look like; `VerbButtonStyle` does it. The overlay's compact controls and segmented controls are sized to what surrounds them.
+  - Buttons answer across at least `Sizing.controlMin` (44 pt), whatever they look like; `VerbButtonStyle` does it. The overlay's compact controls and segmented controls are sized to what surrounds them, and the sidebar is a Mac source list: rows 32 pt tall, 36 apart, the whole row answering.
+  - The overlay speaks in symbols on its row: what is happening on the left, a number, a key or a control on the right. Its sentences appear only when it opens, at 440 pt wide; a text or an answer opens into the box of 440 × 253 pt and scrolls inside it.
   - Status is never shown by colour alone.
   - Animations respect Reduce Motion.
-  - The window works at its minimum size, 900 × 680.
+  - The window works from its minimum size, 720 × 560, to its largest, 1600 × 1200, with the whole sidebar and with its icons alone.
+- **Layout as the window grows.** A page's room is the window less the sidebar, which changes width only when you ask (⌃⌘S), so a wider window never makes a page narrower.
+  - **Sizes:** `PageLayout` gives four, starting at 640, 1040 and 1360 pt of room, with margins of 32, 40, 48 and 56 and gutters of 16, 24, 24 and 32.
+  - **Columns:** they start at the margin, by the sidebar, and stop at a cap for their kind (`Sizing`): a paragraph `columnParagraph` (use `.measure()`), the note editor `columnEditor`, a form `columnForm`, a list `contentMax`, cards side by side `gridLarge` and `gridExtraLarge`. What is left of a wide window goes to the trailing side, or to a second column from the large size on.
+  - **Small sizes:** a control goes under its label instead of losing its words, and a row of tabs becomes a menu.
+  - **Search fields:** at most `searchWidth`.
+  - **The first line:** the sidebar's and every page's are at `pageTop`, under the window's buttons.
 
 ### Words
 
@@ -103,7 +110,7 @@ Views bind to the accessor (`$model.settings.duckAudio`). `AppModel.persistSetti
 
 - [ ] `swift test` passes. Logic changes come with tests.
 - [ ] `bash scripts/build.sh` succeeds and the app runs.
-- [ ] **UI changes:** render the affected screens and attach them in light and dark, English and Italian, including the 900 × 680 minimum where layout is involved:
+- [ ] **UI changes:** render the affected screens and attach them in light and dark, English and Italian, including the 720 × 560 minimum where layout is involved:
   ```sh
   .build/release/Verb --render-snapshots /tmp/renders --only page-home,welcome
   ```

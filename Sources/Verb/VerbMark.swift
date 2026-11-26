@@ -17,13 +17,15 @@ enum MarkGeometry {
         Curve(c1: CGPoint(x: 42, y: 42), c2: CGPoint(x: 23, y: 25), end: CGPoint(x: 2, y: 21)),
     ], bounds: CGRect(x: 2, y: 21, width: 96, height: 67))
 
-    /// A heavier optical size for the menu bar and anything under 24 pt, where the hairline would vanish.
-    static let small = Outline(start: CGPoint(x: 2, y: 20), curves: [
-        Curve(c1: CGPoint(x: 18, y: 23), c2: CGPoint(x: 39, y: 53), end: CGPoint(x: 50, y: 90)),
-        Curve(c1: CGPoint(x: 61, y: 53), c2: CGPoint(x: 82, y: 23), end: CGPoint(x: 98, y: 20)),
-        Curve(c1: CGPoint(x: 82, y: 23), c2: CGPoint(x: 63, y: 40), end: CGPoint(x: 52, y: 58)),
-        Curve(c1: CGPoint(x: 42, y: 40), c2: CGPoint(x: 24, y: 23), end: CGPoint(x: 2, y: 20)),
-    ], bounds: CGRect(x: 2, y: 20, width: 96, height: 70))
+    /// A heavier optical size for the menu bar and anything under 24 pt: thicker wings with square-cut
+    /// tips, so at 16 px they stay solid instead of fading into a few pale pixels.
+    static let small = Outline(start: CGPoint(x: 4, y: 31), curves: [
+        Curve(c1: CGPoint(x: 19, y: 34), c2: CGPoint(x: 39, y: 57), end: CGPoint(x: 50, y: 90)),
+        Curve(c1: CGPoint(x: 60, y: 58), c2: CGPoint(x: 78, y: 33), end: CGPoint(x: 96, y: 27)),
+        Curve(c1: CGPoint(x: 96, y: 27), c2: CGPoint(x: 96, y: 18), end: CGPoint(x: 96, y: 18)),
+        Curve(c1: CGPoint(x: 78, y: 21), c2: CGPoint(x: 61, y: 40), end: CGPoint(x: 52, y: 61)),
+        Curve(c1: CGPoint(x: 43, y: 41), c2: CGPoint(x: 23, y: 20), end: CGPoint(x: 4, y: 19)),
+    ], bounds: CGRect(x: 4, y: 18, width: 92, height: 72))
 
     /// The outline scaled to fit `rect`, centred, in top-left-origin coordinates.
     static func path(small: Bool, in rect: CGRect) -> CGPath {
@@ -46,7 +48,8 @@ struct VerbMark: Shape {
 
 /// Template images for the status item, so macOS tints them for the menu bar.
 enum MenuBarIcon {
-    enum State { case idle, recording, working }
+    /// `attention`: dictating can't work until something is fixed, as when Accessibility is off.
+    enum State { case idle, recording, working, attention }
     static func image(_ state: State, description: String) -> NSImage {
         let width: CGFloat = state == .idle ? 20 : 27
         let image = NSImage(size: NSSize(width: width, height: 16), flipped: true) { _ in
@@ -60,6 +63,10 @@ enum MenuBarIcon {
             case .working:
                 context.setStrokeColor(NSColor.black.cgColor); context.setLineWidth(1.3)
                 context.strokeEllipse(in: CGRect(x: 22, y: 9.5, width: 4, height: 4))
+            case .attention:
+                context.addPath(CGPath(roundedRect: CGRect(x: 23, y: 3, width: 2, height: 7.5), cornerWidth: 1, cornerHeight: 1, transform: nil))
+                context.fillPath()
+                context.fillEllipse(in: CGRect(x: 23, y: 12, width: 2, height: 2))
             }
             return true
         }

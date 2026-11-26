@@ -16,16 +16,20 @@ import VerbCore
         super.init()
         let menu = NSMenu(); menu.delegate = self; menu.autoenablesItems = false
         item.menu = menu
+        // ⌘-drag moves it anywhere in the menu bar; under its own name, the place is kept
+        // from one launch to the next.
+        item.autosaveName = "VerbStatusItem"
         refreshIcon()
     }
 
     func refreshIcon() {
         let t = model.lang
         let meeting: Bool = { if case .recording = model.meeting { return true }; return false }()
-        let state: MenuBarIcon.State = model.phase == .recording || meeting ? .recording : (model.busy ? .working : .idle)
-        let description = model.busy ? model.phaseTitle(t) : t("Verb dictation", "Dettatura Verb")
+        let status = model.menuStatus(t)
+        let state: MenuBarIcon.State = model.phase == .recording || meeting ? .recording : (model.busy ? .working : (status.problem || !model.unread.isEmpty ? .attention : .idle))
+        let description = model.busy ? model.phaseTitle(t) : status.problem ? "Verb · " + status.title : t("Verb dictation", "Dettatura Verb")
         item.button?.image = MenuBarIcon.image(state, description: description)
-        item.button?.toolTip = model.busy ? description : "Verb · " + model.startHint(t)
+        item.button?.toolTip = model.busy ? description : "Verb · " + (status.problem ? status.title + " · " + status.hint : model.startHint(t))
     }
 
     func menuWillOpen(_ menu: NSMenu) {
@@ -37,26 +41,39 @@ import VerbCore
         let t = model.lang
         menu.removeAllItems()
         let header = NSMenuItem(); header.isEnabled = false
-        let idle = model.voiceListening ? t("Listening", "In ascolto") : t("Ready", "Pronto")
-        let view = NSHostingView(rootView: MenuHeader(title: model.busy ? model.phaseTitle(t) : idle, hint: model.startHint(t), live: model.phase == .recording, liveLabel: t("Recording", "In registrazione")))
+        let status = model.menuStatus(t)
+        let mark: MenuHeader.Mark = model.phase == .recording ? .live : status.problem ? .problem : (!model.busy && model.voiceListening ? .listening : .none)
+        let view = NSHostingView(rootView: MenuHeader(title: status.title, hint: status.hint, mark: mark, markLabel: mark == .live ? t("Recording", "In registrazione") : status.title))
         view.frame = NSRect(x: 0, y: 0, width: 280, height: 52)
         header.view = view
         menu.addItem(header)
+        // Problems said while the window was closed, newest first: each opens where it is explained.
+        for problem in model.unread.prefix(3) {
+            let text = t.message(problem), short = text.count > 56 ? String(text.prefix(55)).trimmingCharacters(in: .whitespaces) + "…" : text
+            let row = add(menu, short, symbol: "exclamationmark.triangle", #selector(showProblem(_:)))
+            row.representedObject = problem; row.toolTip = text
+        }
+        if !model.unread.isEmpty { add(menu, t("Clear These Notices", "Cancella questi avvisi"), symbol: "xmark.circle", #selector(clearProblems)) }
+        // Without Accessibility the keys can't work: the way to fix it is the first thing here.
+        if model.runsServices, !model.accessibilityGranted {
+            add(menu, t("Allow Accessibility…", "Consenti l’Accessibilità…"), symbol: "lock.open", #selector(allowAccessibility)).toolTip = t.message(AppModel.accessibilityLost)
+        }
         menu.addItem(.separator())
 
-        add(menu, model.phase == .recording ? t("Finish dictation", "Termina la dettatura") : t("Start hands-free dictation", "Avvia la dettatura a mani libere"), symbol: model.phase == .recording ? "stop.circle" : "mic", #selector(toggle))
+        let toggleRow = add(menu, model.phase == .recording ? t("Finish Dictation", "Termina la dettatura") : t("Start Hands-Free Dictation", "Avvia la dettatura a mani libere"), symbol: model.phase == .recording ? "stop.circle" : "mic", #selector(toggle))
+        Self.show(model.settings.keyOptions.handsFree, on: toggleRow)
         if model.busy { add(menu, t("Cancel", "Annulla"), symbol: "xmark.circle", #selector(cancel)) }
-        if model.restorable != nil, !model.busy { add(menu, t("Restore the cancelled dictation", "Ripristina la dettatura annullata"), symbol: "arrow.uturn.backward", #selector(restoreCancelled)) }
-        add(menu, t("Import audio…", "Importa audio…"), symbol: "square.and.arrow.down", #selector(importAudio)).isEnabled = !model.busy
+        if model.restorable != nil, !model.busy { add(menu, t("Restore the Cancelled Dictation", "Ripristina la dettatura annullata"), symbol: "arrow.uturn.backward", #selector(restoreCancelled)) }
+        add(menu, t("Import Audio…", "Importa audio…"), symbol: "square.and.arrow.down", #selector(importAudio)).isEnabled = !model.busy
         let notepad = add(menu, t("Notepad", "Blocco note"), symbol: "note.text", #selector(openNotepad)); Self.show(model.settings.keyOptions.notepad, on: notepad)
         switch model.meeting {
-        case .idle: add(menu, t("Record a meeting", "Registra una riunione"), symbol: "person.2.wave.2", #selector(startMeeting)).isEnabled = !model.busy
-        case .recording: add(menu, t("Stop the meeting and write the notes", "Termina la riunione e scrivi le note"), symbol: "stop.circle", #selector(stopMeeting))
-        case .writing(let text): add(menu, text, symbol: "hourglass", nil).isEnabled = false
+        case .idle: add(menu, t("Record a Meeting", "Registra una riunione"), symbol: "person.2.wave.2", #selector(startMeeting)).isEnabled = !model.busy
+        case .recording: add(menu, t("Stop the Meeting and Write the Notes", "Termina la riunione e scrivi le note"), symbol: "stop.circle", #selector(stopMeeting))
+        case .writing(let text): add(menu, text + (model.meetingProgress.map { " · " + $0.formatted(.percent.precision(.fractionLength(0)).locale(t.locale)) } ?? ""), symbol: "hourglass", nil).isEnabled = false
         }
-        let copyRow = add(menu, t("Copy last dictation", "Copia l’ultima dettatura"), symbol: "doc.on.doc", #selector(copyLast))
+        let copyRow = add(menu, t("Copy Last Dictation", "Copia l’ultima dettatura"), symbol: "doc.on.doc", #selector(copyLast))
         copyRow.isEnabled = !model.latestText.isEmpty; Self.show(model.settings.keyOptions.copyLast, on: copyRow)
-        if model.inserter.hasPreviousClipboard { add(menu, t("Restore previous clipboard", "Ripristina gli appunti precedenti"), symbol: "arrow.uturn.backward", #selector(restoreClipboard)) }
+        if model.inserter.hasPreviousClipboard { add(menu, t("Restore Previous Clipboard", "Ripristina gli appunti precedenti"), symbol: "arrow.uturn.backward", #selector(restoreClipboard)) }
         let name = model.settings.voiceOptions.spokenName
         let listen = add(menu, t("Listen for “Hey \(name)”", "Ascolta “Ehi \(name)”"), symbol: "waveform", #selector(toggleListening))
         listen.state = model.settings.voiceOptions.wakeWord ? .on : .off
@@ -120,7 +137,7 @@ import VerbCore
         case .endpoint: current = CleanupProvider.endpoint.title(t)
         case .off: current = t("None", "Nessuno")
         }
-        add(menu, t("Writing model · ", "Modello di scrittura · ") + current, symbol: "pencil.line", nil).submenu = providers
+        add(menu, t("Writing Model · ", "Modello di scrittura · ") + current, symbol: "text.badge.checkmark", nil).submenu = providers
 
         guard settings.cleanupProvider == .harness else { return }
         let models = NSMenu(); models.autoenablesItems = false
@@ -135,7 +152,7 @@ import VerbCore
         refresh.target = self; refresh.isEnabled = !model.harnessLoading
         let name = model.harnessCatalog?.models.first(where: { $0.id == settings.harnessOptions.model })?.name ?? t("Choose…", "Scegli…")
         add(menu, t("Model · ", "Modello · ") + name, symbol: "square.stack.3d.up", nil).submenu = models
-        if !settings.allowRemoteProcessing { add(menu, t("Remote processing is off · set up…", "Elaborazione remota spenta · configura…"), symbol: "exclamationmark.triangle", #selector(openModels)) }
+        if !settings.allowRemoteProcessing { add(menu, t("Remote Processing Is Off · Set Up…", "Elaborazione remota disattivata · configura…"), symbol: "exclamationmark.triangle", #selector(openModels)) }
     }
 
     /// Writes keys beside a menu item when they end in a letter or a digit; the menu can't draw others.
@@ -177,6 +194,9 @@ import VerbCore
     @objc private func importAudio() { showPage(.history); model.importAudio() }
     @objc private func copyLast() { if !model.latestText.isEmpty { model.copy(model.latestText) } }
     @objc private func restoreClipboard() { model.inserter.restoreClipboard() }
+    @objc private func allowAccessibility() { model.requestAccessibility() }
+    @objc private func showProblem(_ sender: NSMenuItem) { model.showProblem(sender.representedObject as? String) }
+    @objc private func clearProblems() { model.clearUnread() }
     @objc private func toggleListening() { model.settings.voiceOptions.wakeWord.toggle() }
     @objc private func transform(_ sender: NSMenuItem) { model.applyTransform(sender.tag) }
     @objc private func openWindow() { showWindow() }
@@ -211,10 +231,12 @@ import VerbCore
 
 /// The top of the menu: the mark, the state, and how to start.
 struct MenuHeader: View {
+    /// What the mark at the end says: recording, listening for the name, or a problem to fix.
+    enum Mark { case none, live, listening, problem }
     let title: String
     let hint: String
-    let live: Bool
-    var liveLabel = "Recording"
+    var mark: Mark = .none
+    var markLabel = "Recording"
     var body: some View {
         HStack(spacing: Space.md) {
             VerbMark(small: true).fill(Palette.accent).frame(width: 24, height: 18)
@@ -227,7 +249,12 @@ struct MenuHeader: View {
                 Text(hint).font(Typeface.text(TypeSize.caption)).foregroundStyle(.secondary).lineLimit(1)
             }
             Spacer(minLength: 0)
-            if live { Circle().fill(Palette.accent).frame(width: 8, height: 8).accessibilityLabel(liveLabel) }
+            switch mark {
+            case .live: Circle().fill(Palette.accent).frame(width: 8, height: 8).accessibilityLabel(markLabel)
+            case .listening: Image(systemName: "waveform").font(.system(size: 12, weight: .medium)).foregroundStyle(Palette.accent).accessibilityLabel(markLabel)
+            case .problem: Image(systemName: "exclamationmark.triangle.fill").font(.system(size: 12)).foregroundStyle(Palette.warning).accessibilityLabel(markLabel)
+            case .none: EmptyView()
+            }
         }
         .padding(.horizontal, Space.base)
         .frame(width: 280, height: 52, alignment: .leading)

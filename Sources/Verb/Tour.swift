@@ -40,6 +40,8 @@ extension AppModel {
         tourStops = afterWelcome ? TourStop.all.filter { $0.target != nil } : TourStop.all
         moveTour(to: 0)
         showWindow?()
+        // No field keeps the keys: the arrows move through the tour, and Return and Escape work it.
+        DispatchQueue.main.async { NSApp.keyWindow?.makeFirstResponder(nil) }
     }
     /// Past the last stop, the tour ends.
     func moveTour(to index: Int) {
@@ -90,7 +92,7 @@ struct TourLayer: View {
                     TourCard(index: index)
                         .frame(width: width)
                         .background(GeometryReader { Color.clear.preference(key: CardHeight.self, value: $0.size.height) })
-                        .offset(place(card: CGSize(width: width, height: cardHeight), centred: stop.target == nil, in: proxy.size))
+                        .offset(place(card: CGSize(width: width, height: cardHeight), near: found, avoiding: header, centred: stop.target == nil, in: proxy.size))
                 }
                 .onPreferenceChange(CardHeight.self) { cardHeight = $0 }
                 .onChange(of: Reached(index: index, rect: found), initial: true) { _, reached in TourLayer.reached[reached.index] = reached.rect }
@@ -102,10 +104,20 @@ struct TourLayer: View {
 
     /// In the bottom right corner, over what matters least on any page and in the same place at
     /// every stop; in the middle when the stop points at nothing in the window.
-    private func place(card: CGSize, centred: Bool, in size: CGSize) -> CGSize {
+    /// Beside what it describes: to the right of the opening when there is room, else to its
+    /// left, level with it and inside the window, clear of the page's header opening.
+    private func place(card: CGSize, near hole: CGRect?, avoiding header: CGRect?, centred: Bool, in size: CGSize) -> CGSize {
         let margin = Space.xl
         if centred { return CGSize(width: (size.width - card.width) / 2, height: max(margin, (size.height - card.height) / 2)) }
-        return CGSize(width: size.width - card.width - margin, height: max(margin, size.height - card.height - margin))
+        guard let hole, hole.width > 0 else { return CGSize(width: size.width - card.width - margin, height: max(margin, size.height - card.height - margin)) }
+        var x = hole.maxX + Space.lg
+        if x + card.width > size.width - margin { x = hole.minX - Space.lg - card.width }
+        x = min(max(margin, x), size.width - card.width - margin)
+        var y = min(max(margin, hole.midY - card.height / 2), size.height - card.height - margin)
+        if let header, CGRect(x: x, y: y, width: card.width, height: card.height).intersects(header) {
+            y = min(header.maxY + Space.md, size.height - card.height - margin)
+        }
+        return CGSize(width: x, height: y)
     }
 }
 
@@ -208,8 +220,8 @@ private struct TourCard: View {
             return (t("Settings", "Impostazioni"), t("Your keys, the overlay’s style, “Hey \(model.settings.voiceOptions.spokenName)”, a writing style for each app and how long history is kept.",
                                                      "I tuoi tasti, lo stile della capsula, “Ehi \(model.settings.voiceOptions.spokenName)”, uno stile di scrittura per ogni app e per quanto tempo resta la cronologia."))
         case .footer:
-            return (t("Always in view", "Sempre sott’occhio"), t("Here you see whether anything leaves this Mac and which keys dictate. The last row chooses the appearance: automatic, light or dark.",
-                                                                 "Qui vedi se qualcosa esce da questo Mac e con quali tasti detti. L’ultima riga sceglie l’aspetto: automatico, chiaro o scuro."))
+            return (t("Always in view", "Sempre sott’occhio"), t("Here you see whether anything leaves this Mac, whether Verb listens for its name, and which keys dictate.",
+                                                                 "Qui vedi se qualcosa esce da questo Mac, se Verb ascolta il suo nome e con quali tasti detti."))
         case .page(.dictionary), .page(.snippets), .page(.transforms), .header:
             return ("", "")
         case nil:

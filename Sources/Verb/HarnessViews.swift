@@ -44,9 +44,9 @@ extension AppModel {
             do {
                 let result = try await client.edit(text: "Ehm, il gatto è sul divano, anzi sulla sedia.", style: .natural, vocabulary: [], settings: snapshot, key: "")
                 try Task.checkCancellation()
-                harnessTestResult = "\(snapshot.harnessOptions.provider.title) · \(String(format: "%.1f", Date().timeIntervalSince(start))) s\n\(result)"
-            } catch is CancellationError { harnessTestResult = "Test cancelled." }
-            catch { harnessTestResult = error.localizedDescription }
+                harnessTestResult = "\(snapshot.harnessOptions.provider.title) · \(Date().timeIntervalSince(start).formatted(.number.precision(.fractionLength(1)).locale(lang.locale))) s\n\(result)"; harnessTestPassed = true
+            } catch is CancellationError { harnessTestResult = "Test cancelled."; harnessTestPassed = false }
+            catch { harnessTestResult = error.localizedDescription; harnessTestPassed = false }
         }
     }
 }
@@ -56,7 +56,14 @@ struct HarnessConnectionView: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.lang) private var t
     @State private var executable = ""
+    @State private var setupOpen: Bool?
     private var provider: HarnessProvider { model.settings.harnessOptions.provider }
+    /// The CLI's models, after a prompt to choose one, and the chosen one if the CLI no longer offers it.
+    private var harnessModelOptions: [(value: String, label: String)] {
+        let chosen = model.settings.harnessOptions.model, models = model.harnessCatalog?.models ?? []
+        let missing = !chosen.isEmpty && !models.contains { $0.id == chosen }
+        return [("", t("Choose a model…", "Scegli un modello…"))] + (missing ? [(chosen, chosen + t(" · unavailable", " · non disponibile"))] : []) + models.map { ($0.id, t.message($0.name)) }
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: Space.md) {
             Text(t("Speech can stay on this Mac. Only the transcript goes to your signed-in CLI, for cleanup, voice edits and transforms.", "La voce può restare su questo Mac. Solo la trascrizione va alla CLI a cui hai fatto l’accesso, per rifiniture, modifiche a voce e trasformazioni."))
@@ -64,20 +71,13 @@ struct HarnessConnectionView: View {
             HStack(alignment: .top, spacing: Space.base) {
                 VStack(alignment: .leading, spacing: 6) {
                     FieldLabel(text: t("Provider", "Fornitore"))
-                    Picker(t("Provider", "Fornitore"), selection: Binding(get: { provider }, set: { model.selectHarness($0) })) { ForEach(HarnessProvider.allCases) { Text($0.title).tag($0) } }
-                        .labelsHidden().pickerStyle(.menu)
+                    VerbPicker(title: t("Provider", "Fornitore"), selection: Binding(get: { provider }, set: { model.selectHarness($0) }), options: HarnessProvider.allCases.map { ($0, $0.title) })
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 VStack(alignment: .leading, spacing: 6) {
                     FieldLabel(text: t("Model from your CLI", "Modello dalla tua CLI"))
-                    Picker(t("Model from your CLI", "Modello dalla tua CLI"), selection: $model.settings.harnessOptions.model) {
-                        Text(t("Choose a model…", "Scegli un modello…")).tag("")
-                        if !model.settings.harnessOptions.model.isEmpty, model.harnessCatalog?.models.contains(where: { $0.id == model.settings.harnessOptions.model }) != true {
-                            Text(model.settings.harnessOptions.model + t(" · unavailable", " · non disponibile")).tag(model.settings.harnessOptions.model)
-                        }
-                        ForEach(model.harnessCatalog?.models ?? []) { Text(t.message($0.name)).tag($0.id) }
-                    }
-                    .labelsHidden().pickerStyle(.menu).disabled(model.harnessLoading || model.harnessCatalog == nil)
+                    VerbPicker(title: t("Model from your CLI", "Modello dalla tua CLI"), selection: $model.settings.harnessOptions.model, options: harnessModelOptions)
+                        .disabled(model.harnessLoading || model.harnessCatalog == nil)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -100,7 +100,7 @@ struct HarnessConnectionView: View {
             if let error = model.harnessError { StatusLabel(text: t.message(error), symbol: "exclamationmark.triangle", tone: .warning).textSelection(.enabled) }
             if let catalog = model.harnessCatalog {
                 let stale = Date().timeIntervalSince(catalog.fetchedAt) > 900
-                Text(t("Updated \(catalog.fetchedAt.formatted(.dateTime.day().month().hour().minute().locale(t.locale))) · \(catalog.models.count) models", "Aggiornato \(catalog.fetchedAt.formatted(.dateTime.day().month().hour().minute().locale(t.locale))) · \(catalog.models.count) modelli")
+                Text(t("Updated \(catalog.fetchedAt.formatted(.dateTime.day().month().hour().minute().locale(t.locale)))", "Aggiornato \(catalog.fetchedAt.formatted(.dateTime.day().month().hour().minute().locale(t.locale)))") + " · " + t.count(catalog.models.count, "model", "models", "modello", "modelli")
                      + (stale ? t(" · cached, refresh for current availability", " · in cache, aggiorna per la disponibilità attuale") : ""))
                     .font(Typeface.text(TypeSize.caption)).foregroundStyle(Palette.textTertiary)
                 if let selected = catalog.models.first(where: { $0.id == model.settings.harnessOptions.model }) {
@@ -117,12 +117,9 @@ struct HarnessConnectionView: View {
                 Text(t("Uses your plan’s quota", "Usa la quota del tuo piano")).font(Typeface.text(TypeSize.caption)).foregroundStyle(Palette.textTertiary)
             }
             .disabled(model.busy)
-            if let result = model.harnessTestResult {
-                Text(t.message(result)).font(Typeface.text(TypeSize.footnote)).foregroundStyle(Palette.textPrimary).textSelection(.enabled)
-                    .padding(Space.md).frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Palette.surfaceSunken, in: RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-            }
-            DisclosureGroup {
+            if let result = model.harnessTestResult { TrialResult(passed: model.harnessTestPassed, text: t.message(result)) }
+            // Open by itself while the CLI is missing: installing it is the next step.
+            DisclosureGroup(isExpanded: Binding(get: { setupOpen ?? (model.harnessExecutable == nil) }, set: { setupOpen = $0 })) {
                 VStack(alignment: .leading, spacing: Space.md) {
                     Text(t("Install the official CLI, then sign in from Terminal with your subscription account. Verb uses that login; it never copies credentials or falls back to an API key.",
                            "Installa la CLI ufficiale, poi accedi dal Terminale con il tuo account in abbonamento. Verb usa quell’accesso: non copia mai le credenziali e non ripiega su una chiave API."))
@@ -132,8 +129,8 @@ struct HarnessConnectionView: View {
                             .padding(.horizontal, Space.sm).padding(.vertical, Space.xs).background(Palette.surfaceSunken, in: RoundedRectangle(cornerRadius: Radius.sm, style: .continuous))
                         Button(t("Copy command", "Copia il comando")) { model.copy(provider.loginCommand) }.buttonStyle(VerbButtonStyle(kind: .quiet, compact: true))
                         Spacer()
-                        Link(destination: provider.documentation) { Label(t("Installation guide", "Guida all’installazione"), systemImage: "arrow.up.right") }
-                            .font(Typeface.text(TypeSize.footnote, .medium)).foregroundStyle(Palette.accent)
+                        Button { NSWorkspace.shared.open(provider.documentation) } label: { Label(t("Installation guide", "Guida all’installazione"), systemImage: "arrow.up.right") }
+                            .buttonStyle(VerbButtonStyle(kind: .link, compact: true))
                     }
                     Text(model.harnessExecutable ?? t("No executable detected", "Nessun eseguibile trovato")).font(Typeface.mono(TypeSize.caption)).foregroundStyle(Palette.textTertiary).textSelection(.enabled)
                     HStack(alignment: .bottom, spacing: Space.sm) {

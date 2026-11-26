@@ -60,6 +60,19 @@ extension AppModel {
         flashOutcome?()
     }
 
+    /// Names you dictate again and again that the dictionary doesn't have: offered on the
+    /// Dictionary page, never in the overlay. From your own dictations, in memory only.
+    func noticeRecurringNames() {
+        guard settings.learnFromCorrections else { return }
+        let texts = history.filter { $0.mode == .dictation && $0.status == .completed }.prefix(300).map(\.text)
+        let known = library.vocabulary.map(\.word) + library.snippets.map(\.trigger) + suggestions.map(\.word)
+        let ignored = Set(library.ignored ?? [])
+        let names = VocabularyMatch.recurringNames(in: Array(texts), isOrdinary: AppModel.isOrdinary, known: known)
+            .filter { !ignored.contains(Library.ignoreKey(heard: "", word: $0)) }
+        guard !names.isEmpty else { return }
+        suggestions = Array((suggestions + names.map { VocabularySuggestion(word: $0, heardAs: "") }).suffix(30))
+    }
+
     func acceptSuggestion(_ entry: VocabularySuggestion) {
         suggestions.removeAll { $0.id == entry.id }
         var updated = library
@@ -82,39 +95,6 @@ extension AppModel {
     }
 }
 
-/// In the overlay: "Add “Tommaso” to the dictionary?", with Add and a small cross.
-struct SuggestionPrompt: View {
-    @EnvironmentObject var model: AppModel
-    let entry: VocabularySuggestion
-    var body: some View {
-        let t = model.lang
-        HStack(spacing: Space.sm) {
-            Image(systemName: "character.book.closed").font(.system(size: 13, weight: .medium)).foregroundStyle(Palette.textSecondary)
-            VStack(alignment: .leading, spacing: 1) {
-                Text(t("Add “\(entry.word)” to the dictionary?", "Aggiungere “\(entry.word)” al dizionario?"))
-                    .font(Typeface.text(TypeSize.footnote, .medium)).foregroundStyle(Palette.textPrimary).lineLimit(1)
-                Text(entry.heardAs.isEmpty ? t("You corrected it after the dictation", "L’hai corretta dopo la dettatura") : t("Verb wrote “\(entry.heardAs)”", "Verb aveva scritto “\(entry.heardAs)”"))
-                    .font(Typeface.text(TypeSize.caption)).foregroundStyle(Palette.textSecondary).lineLimit(1)
-            }
-            // Small to look at, the full height of the capsule to hit.
-            Button { model.acceptSuggestion(entry) } label: {
-                Text(t("Add", "Aggiungi")).font(Typeface.text(TypeSize.footnote, .semibold)).foregroundStyle(Palette.textPrimary)
-                    .padding(.horizontal, 10).frame(height: 26).background(Palette.fillHover, in: Capsule())
-                    .frame(minHeight: Sizing.controlMin).contentShape(Rectangle())
-            }
-            .buttonStyle(PlainPressStyle())
-            MiniButton(kind: .cancel, size: 20) { model.dismissSuggestion(entry) }
-                .help(t("Don’t add it, and don’t ask again", "Non aggiungerla e non chiedere più"))
-                .accessibilityLabel(t("Don’t add it", "Non aggiungerla"))
-        }
-        .padding(.leading, 14).padding(.trailing, 4)
-        .frame(height: 44)
-        .background(Palette.surfaceRaised, in: Capsule())
-        .overlay(Capsule().strokeBorder(Palette.borderSubtle))
-        .accessibilityElement(children: .contain)
-    }
-}
-
 /// On the Dictionary page: the words noticed in your corrections, to add or turn down.
 struct SuggestionList: View {
     @EnvironmentObject var model: AppModel
@@ -123,7 +103,7 @@ struct SuggestionList: View {
     var body: some View {
         Card {
             VStack(alignment: .leading, spacing: Space.md) {
-                Rubric(text: t("Noticed in your corrections", "Notate nelle tue correzioni"))
+                Overline(text: t("Noticed in what you write", "Notate in ciò che scrivi"))
                 ForEach(Array(suggestions.enumerated()), id: \.element.id) { index, entry in
                     if index > 0 { Hairline() }
                     HStack(spacing: Space.md) {

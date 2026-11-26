@@ -2,14 +2,20 @@ import AppKit
 import SwiftUI
 import VerbCore
 
-// The overlay in its five styles. The compact ones keep to the essentials, a dot and the ink,
-// and show their small buttons only while the pointer is over them. Space and Escape finish
-// and cancel as always.
+// The overlay in its styles. The notch style hangs from the top of the screen; the others sit at
+// the bottom, above the Dock, and open upward. All of them show the same scene: on their row only
+// symbols, numbers and keys, and words only once they open.
 
 /// Whether the pointer is over the overlay. The panel never becomes key, where SwiftUI's own
 /// hover tracking can't be relied on, so the host view follows the pointer and says so here.
 @MainActor final class OverlayHover: ObservableObject {
     @Published var inside = false
+    /// The screen the overlay is on, for the notch style: its notch, or none.
+    @Published var island = IslandGeometry()
+    /// The room left of the notch the menus of the app in front leave free; nil when unknown.
+    @Published var leftRoom: CGFloat?
+    /// The pointer is near the top of a screen without a notch, where the island waits.
+    @Published var near = false
 }
 
 /// The overlay's host view: it notices the pointer entering and leaving the panel whatever app
@@ -34,25 +40,10 @@ struct OverlayView: View {
     let meter: LevelMeter
     var body: some View {
         Group {
-            if model.phase == .idle, let entry = model.pendingSuggestion {
-                SuggestionPrompt(entry: entry)
-            } else {
-                styled
-            }
+            if model.settings.overlayStyle == .notch { NotchOverlay(meter: meter) } else { CapsuleOverlay(meter: meter) }
         }
         .fixedSize()
         .environment(\.lang, model.lang)
-    }
-    @ViewBuilder private var styled: some View {
-        Group {
-            switch model.settings.overlayStyle {
-            case .classic: ClassicOverlay(meter: meter)
-            case .pill: PillOverlay(meter: meter)
-            case .ink: InkOverlay(meter: meter)
-            case .dot: DotOverlay(meter: meter)
-            case .bar: BarOverlay(meter: meter)
-            }
-        }
     }
 }
 
@@ -63,203 +54,204 @@ struct OverlaySizeKey: PreferenceKey {
 
 /// What the panel holds: the overlay, which reports its size so the panel can fit around it.
 struct OverlayRoot: View {
+    @EnvironmentObject var model: AppModel
     let meter: LevelMeter
     let resized: (CGSize) -> Void
     var body: some View {
         OverlayView(meter: meter)
             .background(GeometryReader { Color.clear.preference(key: OverlaySizeKey.self, value: $0.size) })
             .onPreferenceChange(OverlaySizeKey.self) { resized($0) }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            // The notch style hangs from the top while the panel catches up with its size; the
+            // others keep their bottom edge, and grow upward.
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: model.settings.overlayStyle == .notch ? .top : .bottom)
     }
 }
 
-// MARK: - The compact styles
+// MARK: - At the bottom of the screen
 
-/// A small pill: the red dot and the ink stroke. Under the pointer, a stop button covers the
-/// end of the stroke.
-struct PillOverlay: View {
+/// The styles at the bottom: Classic, Pill, Voice, Dot and Bar. They differ only in their row
+/// while you speak; everything else is a symbol in a capsule, and words open it upward.
+struct CapsuleOverlay: View {
     @EnvironmentObject var model: AppModel
     @EnvironmentObject var hover: OverlayHover
     let meter: LevelMeter
+    @State private var fresh = true
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     var body: some View {
-        let t = model.lang
-        HStack(spacing: Space.sm) {
-            switch model.phase {
-            case .recording:
-                LiveDot(meter: meter, size: 16)
-                InkStroke(meter: meter, still: reduceMotion).frame(width: 78, height: 22)
-                    .overlay(alignment: .trailing) { MiniButton(kind: .stop) { model.finish() }.revealed(hover.inside).offset(x: 4) }
-            case .idle:
-                OutcomeIcon(outcome: model.outcome).frame(width: 16)
-                CompactCaption(text: model.compactTitle(t))
-                if model.canRestore { RestoreButton() }
-            default:
-                if model.modelAtWork { InkDrops(width: 24, height: 14) } else { InkSpinner(size: 14).frame(width: 16) }
-                // Room is kept for the cancel button, so it never covers the words.
-                WorkingCaption(text: model.compactTitle(t), shimmer: model.modelAtWork).padding(.trailing, 26).frame(minWidth: 78, alignment: .leading)
-                    .overlay(alignment: .trailing) { MiniButton(kind: .cancel) { model.cancel() }.revealed(hover.inside && model.phase != .cancelling).offset(x: 4) }
-            }
-        }
-        .padding(.leading, 10).padding(.trailing, 7)
-        .frame(height: 36)
-        .background(Palette.surfaceRaised, in: Capsule())
-        .overlay(Capsule().strokeBorder(Palette.borderSubtle))
-        .compactAccessibility(model, t)
-    }
-}
-
-/// The ink stroke alone, with a red nib where the new ink appears. Under the pointer, the nib
-/// gives way to the stop button.
-struct InkOverlay: View {
-    @EnvironmentObject var model: AppModel
-    @EnvironmentObject var hover: OverlayHover
-    let meter: LevelMeter
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    var body: some View {
-        let t = model.lang
+        let t = model.lang, style = model.settings.overlayStyle
+        let scene = OverlayScene.of(model.overlayFacts(hovering: hover.inside, fresh: fresh))
         Group {
-            switch model.phase {
-            case .recording:
-                InkStroke(meter: meter, still: reduceMotion, nib: hover.inside ? nil : Palette.accent).frame(width: 96, height: 20)
-                    .overlay(alignment: .trailing) { MiniButton(kind: .stop, size: 20) { model.finish() }.revealed(hover.inside).offset(x: 7) }
-            case .idle:
-                HStack(spacing: Space.sm) {
-                    OutcomeIcon(outcome: model.outcome)
-                    CompactCaption(text: model.compactTitle(t))
-                    if model.canRestore { RestoreButton() }
-                }
-            default:
-                Group { if model.modelAtWork { InkDrops(width: 34, height: 18) } else { InkScan() } }.frame(width: 96, height: 20)
-                    .overlay(alignment: .trailing) { MiniButton(kind: .cancel, size: 20) { model.cancel() }.revealed(hover.inside && model.phase != .cancelling).offset(x: 7) }
-            }
+            if scene.isOpen { open(scene, style).accessibilityElement(children: .contain).accessibilityLabel("Verb") }
+            else if !scene.isEmpty { closed(scene, style).compactAccessibility(model, t) }
+            else { Color.clear.frame(width: 1, height: 1) }
         }
-        .padding(.horizontal, 12)
-        .frame(height: 30)
-        .background(Palette.surfaceRaised, in: Capsule())
-        .overlay(Capsule().strokeBorder(Palette.borderSubtle))
-        .compactAccessibility(model, t)
+        .modifier(MessageFreshness(fresh: $fresh))
+        .animation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.86), value: scene)
     }
-}
 
-/// One dot that breathes with your voice, the smallest overlay. Under the pointer the dot
-/// becomes a stop square, and the whole circle is the button.
-struct DotOverlay: View {
-    @EnvironmentObject var model: AppModel
-    @EnvironmentObject var hover: OverlayHover
-    let meter: LevelMeter
-    var body: some View {
-        let t = model.lang
-        Group {
-            if model.phase == .idle {
-                HStack(spacing: Space.sm) {
-                    OutcomeIcon(outcome: model.outcome)
-                    CompactCaption(text: model.compactTitle(t))
-                    if model.canRestore { RestoreButton() }
-                }
-                .padding(.horizontal, 14)
-                .frame(height: 40)
-                .background(Palette.surfaceRaised, in: Capsule())
-                .overlay(Capsule().strokeBorder(Palette.borderSubtle))
-            } else {
-                let recording = model.phase == .recording
-                Button { recording ? model.finish() : model.cancel() } label: {
-                    ZStack {
-                        Circle().fill(Palette.surfaceRaised)
-                        Circle().strokeBorder(hover.inside ? Palette.textPrimary : Palette.borderSubtle, lineWidth: hover.inside ? 1.25 : 1)
-                        if hover.inside {
-                            if recording { RoundedRectangle(cornerRadius: 2, style: .continuous).fill(Palette.textPrimary).frame(width: 11, height: 11) }
-                            else { Image(systemName: "xmark").font(.system(size: 11, weight: .bold)).foregroundStyle(Palette.textSecondary) }
-                        } else if recording {
-                            LiveDot(meter: meter, size: 26)
-                        } else if model.modelAtWork {
-                            InkDrops(width: 26, height: 18)
-                        } else {
-                            InkSpinner(size: 16)
-                        }
+    private var recording: Bool { model.phase == .recording || model.phase == .authorizing }
+    /// Stop shows under the pointer, and always without Accessibility, when Space and Escape can't finish.
+    private var stopShown: Bool { hover.inside || model.keysCantFinish }
+
+    @ViewBuilder private func closed(_ scene: OverlayScene, _ style: OverlayStyle) -> some View {
+        if recording, scene.lead == .recording || scene.lead == .editing {
+            row(scene, style, open: false)
+        } else if style == .dot {
+            ZStack { if let lead = scene.lead { LeadSymbol(lead: lead, meter: meter) } }
+                .frame(width: 40, height: 40)
+                .overlaySurface(Circle())
+        } else {
+            HStack(spacing: Space.sm) {
+                if let lead = scene.lead { LeadSymbol(lead: lead, meter: meter) }
+                TrailContent(trail: scene.trail)
+            }
+            .padding(.horizontal, scene.trail == .none ? 0 : 12)
+            .frame(minWidth: Self.height(style) + 8, minHeight: Self.height(style))
+            .overlaySurface(style == .bar ? AnyInsettableShape(RoundedRectangle(cornerRadius: Radius.md, style: .continuous)) : AnyInsettableShape(Capsule()))
+        }
+    }
+
+    /// Open: one shape that grows upward, the words on top and the row at the bottom, still.
+    private func open(_ scene: OverlayScene, _ style: OverlayStyle) -> some View {
+        let box = scene.body == .paste || scene.body == .answer
+        return VStack(spacing: 0) {
+            OverlayBody(body_: scene.body)
+                .padding(.horizontal, 20).padding(.top, 14).padding(.bottom, Space.xs)
+                .frame(maxWidth: .infinity, maxHeight: box ? .infinity : nil, alignment: .topLeading)
+            Group {
+                if recording, scene.lead == .recording || scene.lead == .editing, scene.body != .answer { row(scene, style, open: true) }
+                else {
+                    HStack(spacing: Space.sm) {
+                        if let lead = scene.lead { LeadSymbol(lead: lead, meter: meter) }
+                        Spacer(minLength: 0)
+                        TrailContent(trail: scene.trail)
                     }
-                    .frame(width: 40, height: 40)
-                    .contentShape(Circle())
+                    .padding(.leading, 18).padding(.trailing, scene.trail == .none ? 18 : 8)
+                }
+            }
+            .frame(height: style == .classic ? 44 : 36)
+        }
+        .frame(width: Sizing.overlayOpenWidth, height: box ? Sizing.overlayBoxHeight : nil)
+        .overlaySurface(RoundedRectangle(cornerRadius: Radius.xl, style: .continuous))
+    }
+
+    /// The row while you speak, in each style's own way.
+    @ViewBuilder private func row(_ scene: OverlayScene, _ style: OverlayStyle, open: Bool) -> some View {
+        let t = model.lang
+        let finish = OverlayControl(kind: .stop, size: style == .classic ? 28 : 22, label: t("Finish. Esc cancels.", "Termina. Esc annulla.")) { model.finish() }
+        let countdown: Int? = { if case .countdown(let seconds) = scene.trail { return seconds }; return nil }()
+        switch style {
+        case .classic:
+            HStack(spacing: 10) {
+                lead(scene)
+                VoiceDotsView(meter: meter, color: Palette.textPrimary)
+                if model.soundLowered { SoundLoweredMark() }
+                Spacer(minLength: Space.sm)
+                if let countdown { CountdownRing(seconds: countdown) } else { time }
+                OverlayKeycap(label: finishKey(t))
+                finish
+            }
+            .padding(.leading, 18).padding(.trailing, 8)
+            .frame(minWidth: open ? nil : 214)
+            .frame(height: 44)
+            .modifier(Surfaced(on: !open, shape: Capsule()))
+        case .pill, .notch:
+            HStack(spacing: Space.sm) {
+                lead(scene)
+                VoiceDotsView(meter: meter, color: Palette.textPrimary)
+                if open { Spacer(minLength: 0); if let countdown { CountdownRing(seconds: countdown) } }
+                if open || stopShown { finish }
+            }
+            .padding(.leading, 14).padding(.trailing, open || stopShown ? 7 : 14)
+            .frame(height: 36)
+            .modifier(Surfaced(on: !open, shape: Capsule()))
+        case .ink:
+            HStack(spacing: Space.sm) {
+                if open { Spacer(minLength: 0) }
+                VoiceDotsView(meter: meter, color: Palette.accent, scale: 0.9)
+                if open { Spacer(minLength: 0); if let countdown { CountdownRing(seconds: countdown) } }
+                if open || stopShown { finish }
+            }
+            .padding(.leading, 12).padding(.trailing, open || stopShown ? 4 : 12)
+            .frame(height: open ? 36 : 30)
+            .modifier(Surfaced(on: !open, shape: Capsule()))
+        case .dot:
+            if open {
+                HStack(spacing: Space.sm) {
+                    Spacer(minLength: 0)
+                    VoiceDotsView(meter: meter, color: Palette.textPrimary, scale: 0.85)
+                    Spacer(minLength: 0)
+                    if let countdown { CountdownRing(seconds: countdown) }
+                    finish
+                }
+                .padding(.horizontal, 7).frame(height: 36)
+            } else {
+                Button { model.finish() } label: {
+                    ZStack {
+                        if hover.inside { RoundedRectangle(cornerRadius: 2, style: .continuous).fill(Palette.textPrimary).frame(width: 11, height: 11) }
+                        else { VoiceDotsView(meter: meter, color: Palette.textPrimary, scale: 0.75) }
+                    }
+                    .frame(width: 40, height: 40).contentShape(Circle())
                 }
                 .buttonStyle(PlainPressStyle())
-                .disabled(model.phase == .cancelling || model.phase == .authorizing)
-                .animation(.easeOut(duration: Motion.fast), value: hover.inside)
+                .overlaySurface(Circle())
+                .help(t("Finish. Esc cancels.", "Termina. Esc annulla."))
             }
+        case .bar:
+            HStack(spacing: Space.sm) {
+                BreathingDot(meter: meter, color: Palette.accent, size: 7)
+                Text(durationLabel(model.elapsed)).font(Typeface.text(TypeSize.caption)).monospacedDigit().foregroundStyle(model.lastMinute ? Palette.warning : Palette.textSecondary)
+                VoiceDotsView(meter: meter, color: Palette.textPrimary, scale: 0.8)
+                if open { Spacer(minLength: 0); if let countdown { CountdownRing(seconds: countdown) } }
+                if open || stopShown { finish }
+            }
+            .padding(.leading, 10).padding(.trailing, open || stopShown ? 4 : 10)
+            .frame(height: open ? 36 : 30)
+            .modifier(Surfaced(on: !open, shape: RoundedRectangle(cornerRadius: Radius.md, style: .continuous)))
         }
-        .compactAccessibility(model, t)
+    }
+
+    @ViewBuilder private func lead(_ scene: OverlayScene) -> some View {
+        if let lead = scene.lead { LeadSymbol(lead: lead, meter: meter) }
+    }
+    private var time: some View {
+        Text(durationLabel(model.elapsed)).font(Typeface.text(TypeSize.body)).monospacedDigit().foregroundStyle(model.lastMinute ? Palette.warning : Palette.textPrimary)
+    }
+    /// The key that finishes: Space once hands-free, otherwise the dictation key to let go.
+    private func finishKey(_ t: Lang) -> String {
+        if model.handsFree { return t("space", "spazio") }
+        return model.settings.keyOptions.dictation.map { t.keys($0.label) } ?? t("space", "spazio")
+    }
+    static func height(_ style: OverlayStyle) -> CGFloat {
+        switch style { case .classic: 44; case .dot: 40; case .ink, .bar: 30; case .pill, .notch: 36 }
     }
 }
 
-/// A slim bar with the time and the ink stroke. Under the pointer, a stop button covers the end
-/// of the stroke.
-struct BarOverlay: View {
-    @EnvironmentObject var model: AppModel
-    @EnvironmentObject var hover: OverlayHover
-    let meter: LevelMeter
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    var body: some View {
-        let t = model.lang
-        HStack(spacing: Space.sm) {
-            switch model.phase {
-            case .recording:
-                LiveDot(meter: meter, size: 12)
-                Text(durationLabel(model.elapsed)).font(Typeface.mono(TypeSize.caption)).monospacedDigit().foregroundStyle(Palette.textSecondary)
-                    .frame(width: 30, alignment: .leading)
-                InkStroke(meter: meter, still: reduceMotion).frame(width: 96, height: 18)
-                    .overlay(alignment: .trailing) { MiniButton(kind: .stop, size: 20) { model.finish() }.revealed(hover.inside).offset(x: 4) }
-            case .idle:
-                OutcomeIcon(outcome: model.outcome).frame(width: 14)
-                CompactCaption(text: model.compactTitle(t))
-                if model.canRestore { RestoreButton() }
-            default:
-                if model.modelAtWork { InkDrops(width: 20, height: 12) } else { InkSpinner(size: 12) }
-                ShimmerText(text: model.compactTitle(t), font: Typeface.text(TypeSize.caption, .medium), shimmer: model.modelAtWork, plain: Palette.textSecondary)
-                    .frame(minWidth: 134, alignment: .leading)
-                    .overlay(alignment: .trailing) { MiniButton(kind: .cancel, size: 20) { model.cancel() }.revealed(hover.inside && model.phase != .cancelling).offset(x: 4) }
-            }
-        }
-        .padding(.horizontal, 10)
-        .frame(height: 30)
-        .background(Palette.surfaceRaised, in: RoundedRectangle(cornerRadius: Radius.md, style: .continuous))
-        .overlay(RoundedRectangle(cornerRadius: Radius.md, style: .continuous).strokeBorder(Palette.borderSubtle))
-        .compactAccessibility(model, t)
+/// The overlay's own surface on a closed row; an open overlay draws one around everything.
+private struct Surfaced<S: InsettableShape>: ViewModifier {
+    let on: Bool
+    let shape: S
+    func body(content: Content) -> some View {
+        if on { content.overlaySurface(shape) } else { content }
     }
 }
 
-// MARK: - Shared pieces
-
-/// The small round button of the compact styles: an ink square to finish, a cross to cancel.
-/// It looks 22 points wide and answers a little beyond its edge.
-struct MiniButton: View {
-    enum Kind { case stop, cancel }
-    let kind: Kind
-    var size: CGFloat = 22
-    let action: () -> Void
-    var body: some View {
-        Button(action: action) {
-            ZStack {
-                Circle().fill(Palette.surfaceRaised)
-                Circle().strokeBorder(kind == .stop ? Palette.textPrimary : Palette.borderStrong, lineWidth: 1.25)
-                if kind == .stop {
-                    RoundedRectangle(cornerRadius: 1.5, style: .continuous).fill(Palette.textPrimary).frame(width: size * 0.34, height: size * 0.34)
-                } else {
-                    Image(systemName: "xmark").font(.system(size: size * 0.36, weight: .bold)).foregroundStyle(Palette.textSecondary)
-                }
-            }
-            .frame(width: size, height: size)
-            .padding(4)
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(PlainPressStyle())
+/// Any rounded shape, for a capsule or the Bar's rectangle.
+struct AnyInsettableShape: InsettableShape {
+    private let path: @Sendable (CGRect) -> Path
+    private let inset: @Sendable (CGFloat) -> AnyInsettableShape
+    init<S: InsettableShape>(_ shape: S) {
+        path = { shape.path(in: $0) }
+        inset = { AnyInsettableShape(shape.inset(by: $0)) }
     }
+    func path(in rect: CGRect) -> Path { path(rect) }
+    func inset(by amount: CGFloat) -> AnyInsettableShape { inset(amount) }
 }
 
-private extension View {
-    /// Shown, and clickable, only while the pointer is over the overlay.
-    func revealed(_ shown: Bool) -> some View {
-        opacity(shown ? 1 : 0).scaleEffect(shown ? 1 : 0.6).allowsHitTesting(shown)
-            .animation(.easeOut(duration: Motion.fast), value: shown)
-    }
+extension View {
+    /// The overlay's own surface over other apps: lighter than any card at night, with a firm
+    /// edge, so it holds over a dark editor, a terminal, a video or a white page alike.
+    func overlaySurface<S: InsettableShape>(_ shape: S) -> some View { modifier(OverlaySurface(shape: shape)) }
     /// One element for VoiceOver, which can finish and cancel although the buttons are hidden.
     func compactAccessibility(_ model: AppModel, _ t: Lang) -> some View {
         accessibilityElement(children: .ignore)
@@ -270,43 +262,28 @@ private extension View {
     }
 }
 
-/// After a cancel, the recording is kept for a few seconds: this writes it down after all.
-struct RestoreButton: View {
-    @EnvironmentObject var model: AppModel
+/// The Mac's sound is down while you speak, because of Verb: it comes back when you stop.
+struct SoundLoweredMark: View {
+    @Environment(\.lang) private var t
     var body: some View {
-        let t = model.lang
-        Button { model.restoreCancelled() } label: {
-            // It keeps its words: a narrow overlay shortens the caption beside it instead.
-            Label(t("Restore", "Ripristina"), systemImage: "arrow.uturn.backward")
-                .font(Typeface.text(TypeSize.footnote, .semibold)).foregroundStyle(Palette.textPrimary)
-                .fixedSize()
-                .padding(.horizontal, 10).frame(height: 26)
-                .background(Palette.fillHover, in: Capsule())
-                .contentShape(Capsule())
-        }
-        .buttonStyle(PlainPressStyle())
-        .help(t("Write down the dictation you just cancelled", "Trascrivi la dettatura appena annullata"))
+        Image(systemName: "speaker.wave.1.fill").font(.system(size: 10, weight: .medium)).foregroundStyle(Palette.textTertiary)
+            .help(t("Sound turned down while you speak", "Audio abbassato mentre parli"))
+            .accessibilityLabel(t("Sound turned down while you speak", "Audio abbassato mentre parli"))
     }
-}
-
-private struct CompactCaption: View {
-    let text: String
-    var body: some View { Text(text).font(Typeface.text(TypeSize.footnote, .medium)).foregroundStyle(Palette.textPrimary).lineLimit(1) }
-}
-
-/// What Verb is doing, in the italic of the words themselves.
-private struct WorkingCaption: View {
-    let text: String
-    var shimmer = false
-    var body: some View { ShimmerText(text: text, font: Typeface.display(TypeSize.body).italic(), shimmer: shimmer) }
 }
 
 /// How the last dictation ended, as one mark.
 struct OutcomeIcon: View {
     let outcome: Outcome
-    var body: some View {
+    /// Pasted as said, because the writing model failed or took too long: a tick, in the warning colour.
+    var asSaid = false
+    var body: some View { mark.accessibilityHidden(true) }
+    /// The words beside it say the same; VoiceOver hears those.
+    @ViewBuilder private var mark: some View {
         switch outcome {
-        case .delivered, .copyOnly: Image(systemName: "checkmark").font(.system(size: 14, weight: .bold)).foregroundStyle(Palette.success)
+        case .delivered: Image(systemName: "checkmark").font(.system(size: 14, weight: .bold)).foregroundStyle(asSaid ? Palette.warning : Palette.success)
+        // Not pasted: the text waits as the last dictation, which is no success.
+        case .copyOnly: Image(systemName: "exclamationmark.circle").font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.warning)
         case .copied: Image(systemName: "doc.on.clipboard").font(.system(size: 13, weight: .medium)).foregroundStyle(Palette.success)
         case .failed: Image(systemName: "exclamationmark.triangle").font(.system(size: 13, weight: .semibold)).foregroundStyle(Palette.warning)
         case .cancelled: Image(systemName: "xmark").font(.system(size: 12, weight: .semibold)).foregroundStyle(Palette.textSecondary)
@@ -330,23 +307,6 @@ struct InkSpinner: View {
                 .rotationEffect(.degrees(turn))
         }
         .frame(width: size, height: size)
-        .accessibilityHidden(true)
-    }
-}
-
-/// While Verb works in the ink style: a hairline with the red nib travelling along it.
-private struct InkScan: View {
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    var body: some View {
-        TimelineView(.animation(minimumInterval: nil, paused: reduceMotion)) { timeline in
-            let phase = reduceMotion ? 0.5 : (sin(timeline.date.timeIntervalSinceReferenceDate * 2 * .pi / 1.4) + 1) / 2
-            Canvas { context, size in
-                let mid = size.height / 2
-                context.fill(Path(CGRect(x: 0, y: mid - 0.6, width: size.width, height: 1.2)), with: .color(Palette.textTertiary))
-                let x = 4 + (size.width - 8) * phase
-                context.fill(Path(ellipseIn: CGRect(x: x - 3, y: mid - 3, width: 6, height: 6)), with: .color(Palette.accent))
-            }
-        }
         .accessibilityHidden(true)
     }
 }
@@ -417,9 +377,13 @@ extension AppModel {
         switch phase {
         case .idle:
             switch outcome {
-            case .delivered: return t.count(latestText.split(whereSeparator: \.isWhitespace).count, "word", "words", "parola", "parole")
-            case .copied: return t("Copied · press ⌘V", "Copiata · premi ⌘V")
-            case .copyOnly: let paste = t.keys(settings.keyOptions.pasteLast); return t("Ready · \(paste) pastes it", "Pronta · \(paste) la incolla")
+            case .delivered: return asSaid ? t("Pasted as said", "Incollata com’era") : t.count(latestText.split(whereSeparator: \.isWhitespace).count, "word", "words", "parola", "parole")
+            case .copied: return t("Copied · press ⌘\u{00A0}V", "Copiata · premi ⌘\u{00A0}V")
+            case .copyOnly:
+                // The reason first, as the note says it, then the way to paste it.
+                let reason = t.message(status).components(separatedBy: " · ").first ?? t("Not pasted", "Non incollata")
+                guard let paste = settings.keyOptions.pasteLast.map({ t.keys($0.label) }) else { return reason }
+                return reason + " · " + t("\(paste) pastes it", "\(paste) la incolla")
             case .failed: return keptRecording ? t("Didn’t work · recording saved", "Non riuscita · registrazione salvata") : t("Didn’t work · see Verb", "Non riuscita · vedi Verb")
             case .cancelled: return t("Cancelled", "Annullata")
             case .empty: return t("No speech", "Nessuna voce")

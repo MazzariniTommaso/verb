@@ -5,24 +5,24 @@ extension KeyTarget {
     func title(_ t: Lang, transforms: [Transform]) -> String {
         switch self {
         case .dictation: return t("Dictation", "Dettatura")
-        case .voiceEdit: return t("Voice edit", "Modifica a voce")
+        case .voiceEdit: return t("Edit or ask", "Modifica o chiedi")
+        case .ask: return t("Ask a question", "Fai una domanda")
         case .copyLast: return t("Copy the last dictation", "Copia l’ultima dettatura")
         case .pasteLast: return t("Paste the last dictation", "Incolla l’ultima dettatura")
         case .notepad: return t("Notepad", "Blocco note")
+        case .handsFree: return t("Hands-free with one press", "Mani libere con una pressione")
         case .transform(let id): return transforms.first { $0.id == id }?.name ?? t("Transform", "Trasformazione")
         }
     }
     func detail(_ t: Lang) -> String {
         switch self {
-        case .dictation: return t("Hold and speak; when you let go, the text goes where the cursor is. While holding, Space switches to hands-free.",
-                                  "Tieni premuto e parla; quando rilasci, il testo va dove c’è il cursore. Tenendo premuto, Spazio passa alle mani libere.")
-        case .voiceEdit: return t("Select some text, hold and say how to change it: “make it shorter”, “traduci in inglese”.",
-                                  "Seleziona un testo, tieni premuto e di’ come cambiarlo: “rendilo più breve”, “translate into English”.")
-        case .copyLast: return t("Puts it on the clipboard. A dictation never replaces what you had copied.",
-                                 "La mette negli appunti. Una dettatura non sostituisce mai ciò che avevi copiato.")
-        case .notepad: return t("Opens and closes the notepad over the other apps. Dictate into it as into any field.", "Apre e chiude il blocco note sopra le altre app. Ci detti come in qualsiasi campo.")
-        case .pasteLast: return t("Where the cursor is, also after a dictation made with no text field in front.",
-                                  "Dove si trova il cursore, anche dopo una dettatura fatta senza un campo di testo davanti.")
+        case .dictation: return t("Hold and speak, let go to write.", "Tieni premuto e parla, rilascia per scrivere.")
+        case .voiceEdit: return t("With text selected, say how to change it. With nothing selected, ask or say what to write.", "Con un testo selezionato, di’ come cambiarlo. Senza selezione, chiedi o di’ cosa scrivere.")
+        case .ask: return t("Hold and ask: the answer comes in the overlay, and the next question follows on.", "Tieni premuto e chiedi: la risposta arriva nella capsula, e la domanda dopo prosegue.")
+        case .copyLast: return t("Puts it on the clipboard.", "La mette negli appunti.")
+        case .notepad: return t("Opens and closes the notepad over any app.", "Apre e chiude il blocco note sopra ogni app.")
+        case .pasteLast: return t("Where the cursor is, even after a dictation with no field.", "Dove c’è il cursore, anche dopo una dettatura senza campo.")
+        case .handsFree: return t("Optional: one press starts, another finishes.", "Facoltativo: una pressione avvia, un’altra termina.")
         case .transform: return t("Select some text and press the keys: the prompt rewrites it.", "Seleziona un testo e premi i tasti: il prompt lo riscrive.")
         }
     }
@@ -59,7 +59,7 @@ struct KeyCaps: View {
                     }
                 }
             }
-            .accessibilityElement(children: .ignore).accessibilityLabel(t.keys(binding.label))
+            .accessibilityElement(children: .ignore).accessibilityLabel(t.spokenKeys(binding))
         } else {
             Text(t("No keys", "Nessun tasto")).font(Typeface.text(large ? TypeSize.title3 : TypeSize.caption, .medium).italic()).foregroundStyle(Palette.textTertiary)
         }
@@ -88,7 +88,38 @@ struct KeyButton: View {
         }
         .buttonStyle(PlainPressStyle())
         .help(t("Change the keys", "Cambia i tasti"))
+        // Whose keys they are, and the keys in words, not symbols.
+        .accessibilityLabel(t("Keys for \(target.title(t, transforms: model.library.transforms))", "Tasti per \(target.title(t, transforms: model.library.transforms))"))
+        .accessibilityValue(t.spokenKeys(model.binding(for: target)))
         .accessibilityHint(t("Opens a window that listens for the new keys", "Apre una finestra che ascolta i nuovi tasti"))
+    }
+}
+
+/// Hands-free by holding the dictation keys and tapping Space. It follows the dictation keys, so
+/// it is shown here rather than chosen.
+struct HandsFreeChordRow: View {
+    @EnvironmentObject var model: AppModel
+    @Environment(\.lang) private var t
+    var body: some View {
+        SettingRow(title: t("Hands-free dictation", "Dettatura a mani libere"),
+                   detail: t("Hold the dictation keys and tap Space. Space finishes, Escape cancels.",
+                             "Tieni i tasti della dettatura e tocca Spazio. Spazio termina, Esc annulla.")) {
+            HStack(spacing: 3) {
+                if let keys = model.settings.keyOptions.dictation {
+                    KeyCaps(binding: keys)
+                    Text("+").font(Typeface.text(TypeSize.caption, .medium)).foregroundStyle(Palette.textSecondary)
+                    Keycap(text: t("Space", "Spazio"))
+                } else {
+                    KeyCaps(binding: nil)
+                }
+            }
+            .padding(.horizontal, Space.md).frame(minWidth: 120, minHeight: 36)
+            .frame(minHeight: Sizing.controlMin)
+            .help(t("It follows the Dictation keys.", "Segue i tasti della Dettatura."))
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(t("Keys for hands-free dictation", "Tasti per la dettatura a mani libere"))
+            .accessibilityValue(model.settings.keyOptions.dictation.map { t.spokenKeys($0) + ", " + t("then Space", "poi Spazio") } ?? t("No keys", "Nessun tasto"))
+        }
     }
 }
 
@@ -127,8 +158,9 @@ struct KeyCaptureSheet: View {
     let target: KeyTarget
     @State private var held: KeyModifiers = []
     @State private var captured: KeyBinding?
+    @State private var listening = true
     /// `captured` starts filled in only for snapshots.
-    init(target: KeyTarget, captured: KeyBinding? = nil) { self.target = target; _captured = State(initialValue: captured) }
+    init(target: KeyTarget, captured: KeyBinding? = nil) { self.target = target; _captured = State(initialValue: captured); _listening = State(initialValue: captured == nil) }
     var body: some View {
         let problem = captured.flatMap(problemText)
         let owner = captured.flatMap { KeyBindings.owner(of: $0, keys: model.settings.keyOptions, transforms: model.library.transforms) }.flatMap { $0 == target ? nil : $0 }
@@ -145,39 +177,52 @@ struct KeyCaptureSheet: View {
                 RoundedRectangle(cornerRadius: Radius.lg, style: .continuous).fill(Palette.surfaceSunken)
                 RoundedRectangle(cornerRadius: Radius.lg, style: .continuous).strokeBorder(Palette.borderSubtle)
                 if !held.isEmpty {
-                    KeyCaps(binding: KeyBinding(modifiers: held, label: held.symbols), large: true).opacity(0.55)
+                    KeyCaps(binding: KeyBinding(modifiers: held, label: held.symbols), large: true).opacity(0.8)
                 } else if let captured {
                     KeyCaps(binding: captured, large: true)
                 } else {
                     Text(t("Listening…", "In ascolto…")).font(Typeface.display(TypeSize.title3).italic()).foregroundStyle(Palette.textSecondary)
                 }
-                KeyCaptureField(onHeld: { held = $0 }, onCapture: { captured = $0; held = [] }, onCancel: { dismiss() })
+                KeyCaptureField(listening: listening, onHeld: { held = $0 }, onCapture: { binding in
+                    captured = binding; held = []; listening = false
+                    // What was pressed, and what it means, for VoiceOver.
+                    Announcer.say(t.spokenKeys(binding) + ". " + (problemText(binding) ?? caution(binding) ?? t("Return uses them.", "Invio li usa.")))
+                }, onCancel: { dismiss() })
                     .frame(width: 1, height: 1).opacity(0.01).accessibilityHidden(true)
             }
             .frame(height: 120)
+            // The keys caught stay until they are used; this listens again.
+            .overlay(alignment: .bottomTrailing) {
+                if !listening {
+                    Button(t("Press other keys", "Premi altri tasti")) { captured = nil; listening = true }
+                        .buttonStyle(VerbButtonStyle(kind: .quiet, compact: true)).padding(.trailing, Space.sm)
+                }
+            }
             if let problem {
                 StatusLabel(text: problem, symbol: "exclamationmark.triangle", tone: .warning)
             } else if let owner {
                 let name = owner.title(t, transforms: model.library.transforms)
                 StatusLabel(text: t("These keys are set for “\(name)”: they will move here, and “\(name)” will have no keys.",
                                     "Questi tasti sono di “\(name)”: passeranno qui e “\(name)” resterà senza tasti."), symbol: "arrow.left.arrow.right", tone: .warning)
+            } else if let captured, let caution = caution(captured) {
+                StatusLabel(text: caution, symbol: "exclamationmark.triangle", tone: .warning)
             } else if captured != nil {
                 StatusLabel(text: t("Ready to use.", "Pronti da usare."), symbol: "checkmark.circle", tone: .success)
             }
             HStack(spacing: Space.sm) {
                 if model.binding(for: target) != nil {
-                    Button(t("Remove the keys", "Togli i tasti")) { model.assign(nil, to: target); dismiss() }.buttonStyle(VerbButtonStyle(kind: .quiet))
+                    Button(t("Remove the keys", "Togli i tasti")) { model.assign(nil, to: target); dismiss() }.buttonStyle(VerbButtonStyle(kind: .secondary))
                 }
                 if let standard = target.standard, model.binding(for: target) != standard {
                     Button(t("Use \(t.keys(standard.label))", "Usa \(t.keys(standard.label))")) { captured = standard }.buttonStyle(VerbButtonStyle(kind: .quiet))
                 }
                 Spacer()
-                Button(t("Cancel", "Annulla")) { dismiss() }.buttonStyle(VerbButtonStyle(kind: .quiet))
+                Button(t("Cancel", "Annulla")) { dismiss() }.buttonStyle(VerbButtonStyle(kind: .quiet)).keyboardShortcut(.cancelAction)
                 Button(t("Use these keys", "Usa questi tasti")) {
                     guard let captured else { return }
                     model.assign(captured, to: target); dismiss()
                 }
-                .buttonStyle(VerbButtonStyle(kind: .primary)).disabled(captured == nil || problem != nil)
+                .buttonStyle(VerbButtonStyle(kind: .primary)).disabled(captured == nil || problem != nil).keyboardShortcut(.defaultAction)
             }
         }
         .padding(Space.xxl)
@@ -188,8 +233,24 @@ struct KeyCaptureSheet: View {
         .onDisappear { model.hotkeys.suspended = false }
     }
 
+    /// What the keys would take from someone else, when they can be used all the same.
+    private func caution(_ binding: KeyBinding) -> String? {
+        if binding.usesVoiceOverKeys, NSWorkspace.shared.isVoiceOverEnabled {
+            return t("VoiceOver uses ⌃ ⌥ for its commands: these keys can get in its way.", "VoiceOver usa ⌃ ⌥ per i suoi comandi: questi tasti possono intralciarlo.")
+        }
+        let apps = binding.knownUsers
+        guard !apps.isEmpty else { return nil }
+        let names = apps.formatted(.list(type: .and).locale(t.locale))
+        return t("\(names) also use these keys. Verb takes them in every app.", "Anche \(names) usano questi tasti. Verb li prende in tutte le app.")
+    }
     /// Why the keys can't be used at all, in words; nil when they can.
     private func problemText(_ binding: KeyBinding) -> String? {
+        if binding.usesVoiceOverKeys, binding.isModifierOnly, NSWorkspace.shared.isVoiceOverEnabled {
+            return t("VoiceOver holds ⌃ ⌥ for every command, so Verb leaves them to it while it runs. Choose other keys.", "VoiceOver tiene premuti ⌃ ⌥ per ogni comando, quindi Verb li lascia a VoiceOver finché è attivo. Scegli altri tasti.")
+        }
+        if Hotkeys.systemUses(binding) {
+            return t("macOS uses these keys for one of its shortcuts. Choose others, or turn that one off in Keyboard Shortcuts.", "macOS usa questi tasti per una sua scorciatoia. Scegline altri, o disattiva quella in Abbreviazioni da tastiera.")
+        }
         switch binding.problem(hold: target.hold) {
         case nil: return nil
         case .needsModifier: return t("Add ⌃, ⌥ or ⌘: on its own that key is for typing. F1 to F20 work on their own.", "Aggiungi ⌃, ⌥ o ⌘: da solo quel tasto serve per scrivere. Da F1 a F20 vanno bene anche da soli.")

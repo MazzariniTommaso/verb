@@ -31,6 +31,35 @@ final class FieldTests: XCTestCase {
         XCTAssertEqual(FieldFormatting.adjust("processing", before: "pre-", after: "", isOrdinary: ordinary), "processing", "a dash inside a word")
     }
 
+    func testEveryLineBreakAndListMarkerStartsASentence() {
+        for before in ["Prima riga\r\n", "Prima riga\u{2028}", "Prima riga\u{2029}", "Prima riga\u{000B}", "Spesa:\n- ", "* ", "> ", "1) ", "- [ ] ", "  - "] {
+            XCTAssertEqual(FieldFormatting.adjust("comprare il latte.", before: before, after: "", isOrdinary: ordinary), "Comprare il latte.", before.debugDescription)
+        }
+        XCTAssertEqual(FieldFormatting.adjust("Il latte.", before: "Costo 5 - ", after: "", isOrdinary: ordinary), "il latte.", "a dash inside a line is no list")
+    }
+
+    func testCodeKeepsItsCasing() {
+        XCTAssertEqual(FieldFormatting.adjust("let x = 1", before: "    ", after: "", isOrdinary: ordinary, casing: false), "let x = 1")
+        XCTAssertEqual(FieldFormatting.adjust("String", before: "let name: ", after: "", isOrdinary: ordinary, casing: false), "String")
+        XCTAssertEqual(FieldFormatting.adjust("Return result", before: "x", after: "", isOrdinary: ordinary, casing: false), " Return result", "spaces still fit")
+    }
+
+    func testChineseAndJapaneseTakeNoSpaces() {
+        XCTAssertEqual(FieldFormatting.adjust("谢谢你", before: "你好", after: "", isOrdinary: ordinary), "谢谢你")
+        XCTAssertEqual(FieldFormatting.adjust("去北京", before: "我想", after: "了", isOrdinary: ordinary), "去北京")
+        XCTAssertEqual(FieldFormatting.adjust("Qué tal", before: "Hola ¿", after: "", isOrdinary: ordinary), "Qué tal", "no space after an opening mark")
+        XCTAssertEqual(FieldFormatting.adjust("ありがとう", before: "今日は。", after: "", isOrdinary: ordinary), "ありがとう")
+    }
+
+    func testTerminalsTakeTheWordsAsSaidUnlessChosenOtherwise() {
+        var settings = Settings()
+        settings.appStyles = [:]
+        for terminal in ["com.mitchellh.ghostty", "net.kovidgoyal.kitty", "dev.warp.Warp-Stable", "com.apple.Terminal"] { XCTAssertEqual(settings.style(for: terminal), .verbatim, terminal) }
+        settings.appStyles["net.kovidgoyal.kitty"] = .casual
+        XCTAssertEqual(settings.style(for: "net.kovidgoyal.kitty"), .casual)
+        XCTAssertEqual(settings.style(for: "com.apple.TextEdit"), settings.style)
+    }
+
     func testFieldTermsNeverReplaceKnownNamesOrOtherNumbers() {
         // Asked with its own casing, the checker knows "Paolo" and "Giulio", not "paolo" or "giulio".
         let known: (String) -> Bool = { ["Paolo", "Giulio", "Paola", "Giulia", "sentito", "ieri", "poi", "server", "parlato"].contains($0) }
@@ -70,6 +99,41 @@ final class FieldTests: XCTestCase {
         XCTAssertEqual(FieldTerms.correct("la classe DictationRecod", terms: ["DictationRecord", "DictationStats"], isOrdinary: ordinary), "la classe DictationRecord")
     }
 
+    func testKeysAndPasswordsInTheFieldAreNeverTerms() {
+        let env = "OPENAI_API_KEY=sk-proj-4fT9xQ2mLk8vR1pZ7wYc\nDB_PASSWORD=hunter2\nSTRIPE=pk_live_51HqLyjWDarjtT1zdp7dc\ntoken: abc123def\nGITHUB=ghp_1234567890abcdefABCDEF1234\nUserRecord e AppModel"
+        let terms = FieldTerms.extract(from: env, isOrdinary: ordinary)
+        for secret in ["sk-proj-4fT9xQ2mLk8vR1pZ7wYc", "hunter2", "pk_live_51HqLyjWDarjtT1zdp7dc", "abc123def", "ghp_1234567890abcdefABCDEF1234"] { XCTAssertFalse(terms.contains(secret), secret) }
+        XCTAssertTrue(terms.contains("UserRecord")); XCTAssertTrue(terms.contains("AppModel"))
+        XCTAssertTrue(terms.contains("DB_PASSWORD"), "the name of a setting is not its value")
+        XCTAssertTrue(FieldTerms.isSecretShaped("3f2a9c1e-77b4-4d1a-9a0e-5c3b2f1d0e9a"))
+        XCTAssertFalse(FieldTerms.isSecretShaped("testDictationFitsTheText"), "a long identifier without digits is code")
+        XCTAssertFalse(FieldTerms.isSecretShaped("GPT5"))
+    }
+
+    func testADictationWaitsForTheWritingModelOnlySoLong() {
+        XCTAssertEqual(CleanupProvider.local.deadline(words: 40), 14, accuracy: 0.001)
+        XCTAssertLessThan(CleanupProvider.local.deadline(words: 40), CleanupProvider.endpoint.deadline(words: 40))
+        XCTAssertLessThan(CleanupProvider.endpoint.deadline(words: 40), CleanupProvider.harness.deadline(words: 40), "a CLI takes longest")
+        XCTAssertGreaterThan(CleanupProvider.local.deadline(words: 600), CleanupProvider.local.deadline(words: 40), "longer dictations get longer")
+        var settings = Settings(), other = settings
+        other.cleanupModel = "gemma3:4b"
+        XCTAssertNotEqual(settings.writerIdentity, other.writerIdentity, "another model ends a rest")
+        settings.style = .formal
+        XCTAssertEqual(settings.writerIdentity, Settings().writerIdentity, "the style is not the model")
+    }
+
+    func testNamesFromTheFieldStayWithAWritingModelOnThisMac() {
+        var settings = Settings()
+        settings.cleanupProvider = .local
+        XCTAssertTrue(settings.writingStaysOnMac)
+        settings.cleanupProvider = .endpoint; settings.cleanupEndpoint = "http://127.0.0.1:1234/v1/chat/completions"
+        XCTAssertTrue(settings.writingStaysOnMac)
+        settings.cleanupEndpoint = "https://api.groq.com/openai/v1/chat/completions"
+        XCTAssertFalse(settings.writingStaysOnMac)
+        settings.cleanupProvider = .harness
+        XCTAssertFalse(settings.writingStaysOnMac, "a subscription CLI sends to its service")
+    }
+
     func testMarkdownSnippetsBecomeHTMLAndPlainText() {
         let snippet = "Ciao **Anna**,\necco il *piano*:\n- primo punto\n- vedi [il sito](https://verb.app)\n\n`codice` finale"
         XCTAssertTrue(RichText.hasFormatting(snippet))
@@ -100,5 +164,16 @@ final class FieldTests: XCTestCase {
         // Totals saved with only some fields still read.
         let partial = try! JSONDecoder().decode(DictationStats.self, from: Data(#"{"words": 100, "seconds": 60, "dictations": 3}"#.utf8))
         XCTAssertEqual(partial.words, 100); XCTAssertEqual(partial.days, [:]); XCTAssertEqual(partial.wordsPerMinute, 100)
+    }
+    func testALongRewriteGetsRoomForItsWholeAnswer() {
+        XCTAssertEqual(RewriteBudget.maxWords(.local), 3000)
+        XCTAssertEqual(RewriteBudget.maxWords(.endpoint), 12000); XCTAssertEqual(RewriteBudget.maxWords(.harness), 12000)
+        XCTAssertEqual(RewriteBudget.outputTokens(words: 40), 2048, "a short answer keeps the usual room")
+        XCTAssertEqual(RewriteBudget.outputTokens(words: 3000), 7500, "a translation can be longer than the text")
+        XCTAssertLessThanOrEqual(RewriteBudget.outputTokens(words: RewriteBudget.maxWords(.endpoint)), 32_768)
+        XCTAssertEqual(RewriteBudget.localContext(words: 500), 8192)
+        let longest = RewriteBudget.maxWords(.local), context = RewriteBudget.localContext(words: longest)
+        XCTAssertEqual(context, 16384)
+        XCTAssertLessThan(longest * 3 / 2 + RewriteBudget.outputTokens(words: longest) + 600, context, "the text, its answer and the prompt fit on this Mac")
     }
 }

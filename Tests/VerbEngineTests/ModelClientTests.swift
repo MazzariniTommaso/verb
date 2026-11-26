@@ -49,6 +49,27 @@ final class EndpointTests: XCTestCase {
         let result = try await edit("/v1/chat/completions", model: "gpt-oss:120b-cloud", remote: true)
         XCTAssertEqual(result, "Ciao test.")
     }
+    func testAnswersStreamInPieces() async throws {
+        var settings = Settings(); settings.cleanupProvider = .endpoint; settings.cleanupEndpoint = base + "/v1/chat/completions"; settings.hostedCleanupModel = "gpt-4o-mini"
+        let pieces = Pieces()
+        let answer = try await ModelClient().ask(system: "Answer.", user: Assistant.userMessage(request: "Ciao, come stai?", near: nil, screen: nil), settings: settings, key: "", partial: { pieces.note($0) })
+        XCTAssertEqual(answer, "Ciao, come stai?")
+        XCTAssertEqual(pieces.all.last, "Ciao, come stai?")
+        XCTAssertGreaterThanOrEqual(pieces.all.count, 2, "The card fills as the answer comes")
+        XCTAssertEqual(try requests().first?["keys"] as? [String], ["max_tokens", "messages", "model", "stream", "temperature"])
+    }
+    func testAReasoningModelAnswersWithoutStreaming() async throws {
+        var settings = Settings(); settings.cleanupProvider = .endpoint; settings.cleanupEndpoint = base + "/reasoning/v1/chat/completions"; settings.hostedCleanupModel = "gpt-5-mini"
+        let answer = try await ModelClient().ask(system: "Answer.", user: Assistant.userMessage(request: "Sì.", near: nil, screen: nil), settings: settings, key: "")
+        XCTAssertEqual(answer, "Sì.")
+        XCTAssertEqual(try requests().count, 2)
+    }
+    func testWhisperHearsAShortListOfWords() {
+        let vocabulary = (0..<200).map { VocabularyEntry(word: "Parola\($0)") }
+        let prompt = ModelClient.speechPrompt(vocabulary)
+        XCTAssertLessThanOrEqual(prompt.count, 600)
+        XCTAssertTrue(prompt.hasPrefix("Parola0, Parola1"))
+    }
     func testDroppedDownloadResumes() async throws {
         let largest = Largest()
         let (file, response) = try await SpeechDownload.fetch(URL(string: base + "/weights.bin")!, configuration: .ephemeral) { largest.note($0) }
@@ -60,6 +81,13 @@ final class EndpointTests: XCTestCase {
         XCTAssertFalse(ranges.first?.hasPrefix("bytes=0-") ?? true)
         XCTAssertEqual(largest.value, 3_000_000, "Progress reaches the whole file")
     }
+}
+
+private final class Pieces: @unchecked Sendable {
+    private let lock = NSLock()
+    private var pieces: [String] = []
+    func note(_ value: String) { lock.lock(); pieces.append(value); lock.unlock() }
+    var all: [String] { lock.lock(); defer { lock.unlock() }; return pieces }
 }
 
 private final class Largest: @unchecked Sendable {

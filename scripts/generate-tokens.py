@@ -2,8 +2,9 @@
 """Generate Verb's platform tokens from the one source, Design/tokens.json.
 
 Writes Sources/Verb/DesignTokens.swift and Design/tokens.css, then prints a
-WCAG 2.2 contrast report for the required pairs in light and dark. Exits 1 if
-any required pair fails, so a palette edit cannot silently break legibility.
+WCAG 2.2 contrast report for the required pairs in light and dark, with and
+without Increase Contrast. Exits 1 if any required pair fails, so a palette edit
+cannot silently break legibility.
 
     python3 scripts/generate-tokens.py
 """
@@ -17,7 +18,8 @@ SOURCE = ROOT / "Design" / "tokens.json"
 SWIFT = ROOT / "Sources" / "Verb" / "DesignTokens.swift"
 CSS = ROOT / "Design" / "tokens.css"
 
-# (foreground, background, minimum). Alpha tokens are composited over the page first.
+# (foreground, background, minimum). Alpha tokens are composited over the page first; a
+# background written "fill@surface" is that fill over that surface, as components draw it.
 REQUIRED = [
     ("text-primary", "surface-page", 4.5), ("text-primary", "surface-raised", 4.5), ("text-primary", "surface-sunken", 4.5), ("text-primary", "surface-selected", 4.5),
     ("text-secondary", "surface-page", 4.5), ("text-secondary", "surface-raised", 4.5), ("text-secondary", "surface-sunken", 4.5),
@@ -31,7 +33,17 @@ REQUIRED = [
     ("border-strong", "surface-page", 3.0), ("border-strong", "surface-raised", 3.0),
     ("accent", "surface-raised", 3.0),  # the live recording dot as a graphic
     ("control-on", "surface-page", 3.0), ("control-on", "surface-raised", 3.0), ("control-knob-on", "control-on", 3.0),
+    # As the components draw them: text on a hovered row, on the sidebar, on a tinted notice.
+    ("text-secondary", "fill-hover@surface-raised", 4.5), ("text-tertiary", "fill-hover@surface-raised", 4.5), ("text-tertiary", "surface-sunken", 4.5),
+    ("text-primary", "fill-pressed@surface-raised", 4.5), ("text-secondary", "warning-tint@surface-raised", 4.5),
+    ("border-strong", "surface-sunken", 3.0), ("control-on", "surface-selected", 3.0),
+    # The overlay over other apps.
+    ("text-primary", "surface-overlay", 4.5), ("text-secondary", "surface-overlay", 4.5), ("accent", "surface-overlay", 3.0),
+    # The island under the notch, black in both themes.
+    ("text-on-notch", "surface-notch", 4.5), ("text-on-notch-secondary", "surface-notch", 4.5), ("accent-on-notch", "surface-notch", 3.0),
 ]
+# With Increase Contrast, hairlines must read as lines too.
+REQUIRED_CONTRAST = REQUIRED + [("border-subtle", "surface-page", 3.0), ("border-subtle", "surface-raised", 3.0)]
 
 
 def camel(name):
@@ -100,20 +112,29 @@ def main():
     if missing:
         print("Dark overrides missing for:", ", ".join(sorted(missing)))
         return 1
+    contrast_section = tokens.get("contrast", {})
+    light_more = {**light, **colors(contrast_section.get("semantic", {}).get("color", {}), tokens)}
+    dark_more = {**dark, **colors(contrast_section.get("dark", {}).get("semantic", {}).get("color", {}), tokens)}
 
     # Contrast report, measured on the resolved values.
     failures = 0
-    for mode, table in (("light", light), ("dark", dark)):
+    for mode, table, required in (("light", light, REQUIRED), ("dark", dark, REQUIRED), ("light, more contrast", light_more, REQUIRED_CONTRAST), ("dark, more contrast", dark_more, REQUIRED_CONTRAST)):
         print(f"{mode}:")
         page = table["surface-page"]
-        flat = lambda name: over(table[name], page) if len(table[name].lstrip("#")) == 8 else table[name]
-        for fg, bg, need in REQUIRED:
+        def flat(name, base=None):
+            # A fill over a surface, the surface itself over the page when it has alpha.
+            if "@" in name:
+                top, under = name.split("@")
+                return flat(top, flat(under))
+            base = base or page
+            return over(table[name], base) if len(table[name].lstrip("#")) == 8 else table[name]
+        for fg, bg, need in required:
             background = flat(bg)
             foreground = over(table[fg], background) if len(table[fg].lstrip("#")) == 8 else table[fg]
             ratio = contrast(foreground, background)
             ok = ratio >= need
             failures += not ok
-            print(f"  {'PASS' if ok else 'FAIL'}  {fg:22} on {bg:22} {ratio:5.2f}:1  (min {need})")
+            print(f"  {'PASS' if ok else 'FAIL'}  {fg:22} on {bg:26} {ratio:5.2f}:1  (min {need})")
 
     # Swift.
     lines = [
@@ -121,14 +142,14 @@ def main():
         "import AppKit",
         "import SwiftUI",
         "",
-        "/// Semantic colours for AppKit. Each resolves to its light or dark value from the drawing appearance.",
+        "/// Semantic colours for AppKit. Each resolves to its light or dark value from the drawing appearance,",
+        "/// and to a stronger one of each with Increase Contrast.",
         "enum NSPalette {",
     ]
+    hexa = lambda value: "0x%02X%02X%02X, %.2f" % rgba(value)[:3] + ", " if False else "0x%02X%02X%02X, %.2f" % (*rgba(value)[:3], rgba(value)[3])
     for name in light:
-        lr, lg, lb, la = rgba(light[name])
-        dr, dg, db, da = rgba(dark[name])
         lines.append(
-            f"    static let {camel(name)} = NSColor.verb(light: 0x{lr:02X}{lg:02X}{lb:02X}, {la:.2f}, dark: 0x{dr:02X}{dg:02X}{db:02X}, {da:.2f})"
+            f"    static let {camel(name)} = NSColor.verb(light: {hexa(light[name])}, dark: {hexa(dark[name])}, lightMore: {hexa(light_more[name])}, darkMore: {hexa(dark_more[name])})"
         )
     lines += ["}", "", "/// Semantic colours for SwiftUI.", "enum Palette {"]
     for name in light:
@@ -164,10 +185,16 @@ def main():
         "}",
         "",
         "extension NSColor {",
-        "    static func verb(light: UInt32, _ lightAlpha: CGFloat, dark: UInt32, _ darkAlpha: CGFloat) -> NSColor {",
+        "    static func verb(light: UInt32, _ lightAlpha: CGFloat, dark: UInt32, _ darkAlpha: CGFloat,",
+        "                     lightMore: UInt32, _ lightMoreAlpha: CGFloat, darkMore: UInt32, _ darkMoreAlpha: CGFloat) -> NSColor {",
         "        NSColor(name: nil) { appearance in",
-        "            let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua",
-        "            let (value, alpha) = isDark ? (dark, darkAlpha) : (light, lightAlpha)",
+        "            let (value, alpha): (UInt32, CGFloat)",
+        "            switch appearance.bestMatch(from: [.aqua, .darkAqua, .accessibilityHighContrastAqua, .accessibilityHighContrastDarkAqua]) {",
+        "            case .darkAqua?: (value, alpha) = (dark, darkAlpha)",
+        "            case .accessibilityHighContrastAqua?: (value, alpha) = (lightMore, lightMoreAlpha)",
+        "            case .accessibilityHighContrastDarkAqua?: (value, alpha) = (darkMore, darkMoreAlpha)",
+        "            default: (value, alpha) = (light, lightAlpha)",
+        "            }",
         "            return NSColor(srgbRed: CGFloat((value >> 16) & 0xFF) / 255, green: CGFloat((value >> 8) & 0xFF) / 255, blue: CGFloat(value & 0xFF) / 255, alpha: alpha)",
         "        }",
         "    }",
@@ -191,6 +218,8 @@ def main():
         f":root {{\n{block(light)}\n{sizes}\n{space}\n{radius}\n}}\n"
         f"@media (prefers-color-scheme: dark) {{\n  :root:not([data-theme=\"light\"]) {{\n{block(dark_only).replace(chr(10) + '  ', chr(10) + '    ').replace('  --', '    --', 1)}\n  }}\n}}\n"
         f":root[data-theme=\"dark\"] {{\n{block(dark_only)}\n}}\n"
+        f"@media (prefers-contrast: more) {{\n  :root {{\n{block(light_more).replace(chr(10) + '  ', chr(10) + '    ').replace('  --', '    --', 1)}\n  }}\n}}\n"
+        f"@media (prefers-contrast: more) and (prefers-color-scheme: dark) {{\n  :root:not([data-theme=\"light\"]) {{\n{block(dark_more).replace(chr(10) + '  ', chr(10) + '    ').replace('  --', '    --', 1)}\n  }}\n}}\n"
     )
     CSS.write_text(css)
     print(f"\nWrote {SWIFT.relative_to(ROOT)} and {CSS.relative_to(ROOT)}")

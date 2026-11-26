@@ -30,11 +30,16 @@ public enum VoiceCommands {
 
     /// A word of the text and where it sits, so a phrase can be cut out of the original.
     /// `opensSentence` is set when a full stop, question or exclamation mark comes before it:
-    /// a greeting never reaches across one ("Ciao. Ehi Verb stop." keeps "Ciao.").
-    struct Word { let folded: String; let range: Range<String.Index>; var opensSentence = false }
+    /// a greeting never reaches across one ("Ciao. Ehi Verb stop." keeps "Ciao."). `afterPause`
+    /// is set when any mark comes before it, a comma included: the engine writes a pause that way.
+    struct Word { let folded: String; let range: Range<String.Index>; var opensSentence = false; var afterPause = false }
 
     /// Greetings that open the wake phrase on their own.
     static let wakeGreetings: Set<String> = ["ehi", "hey", "hei", "ei", "ej", "el", "evi", "eli", "ey", "ehy", "hej", "hi", "ay", "ai", "oh", "ohi", "oi"]
+    /// Greetings that are also ordinary words ("oh", "hi", Spanish "el", Italian "ai"): before
+    /// more words they count only with a pause after the name, as in "Hi Verb, take a note";
+    /// "Oh, verb tenses are hard" is a sentence.
+    static let looseGreetings: Set<String> = ["oh", "hi", "el", "ai", "ay", "oi"]
     /// "Ehi" heard as two words.
     static let splitGreetings: [[String]] = [["e", "i"], ["e", "hi"], ["eh", "i"]]
     /// Short words that are a greeting only in front of the name, when nothing else is said,
@@ -252,17 +257,18 @@ public enum VoiceCommands {
 
     static func words(_ text: String) -> [Word] {
         var result: [Word] = []
-        var index = text.startIndex, sentenceBreak = false
+        var index = text.startIndex, sentenceBreak = false, pause = false
         while index < text.endIndex {
             guard text[index].isLetter || text[index].isNumber else {
                 if ".!?…".contains(text[index]) { sentenceBreak = true }
+                if !text[index].isWhitespace, text[index] != "'", text[index] != "’" { pause = true }
                 index = text.index(after: index); continue
             }
             var end = index
             while end < text.endIndex, text[end].isLetter || text[end].isNumber { end = text.index(after: end) }
             let folded = text[index..<end].folding(options: [.caseInsensitive, .diacriticInsensitive], locale: Locale(identifier: "en_US_POSIX"))
-            result.append(Word(folded: folded, range: index..<end, opensSentence: sentenceBreak && !result.isEmpty))
-            index = end; sentenceBreak = false
+            result.append(Word(folded: folded, range: index..<end, opensSentence: sentenceBreak && !result.isEmpty, afterPause: pause && !result.isEmpty))
+            index = end; sentenceBreak = false; pause = false
         }
         return result
     }
@@ -297,7 +303,10 @@ extension VoiceCommands.Phrases {
         guard let first = folded.first else { return nil }
         if isJoinedWake(first, greetings: VoiceCommands.wakeGreetings) { return 1 }
         let greeting = VoiceCommands.greetingLength(folded, at: 0, weak: false)
-        if greeting > 0, folded.count > greeting, names.contains(folded[greeting]) || shortNames.contains(folded[greeting]), VoiceCommands.sameSentence(words, 0, greeting) { return greeting + 1 }
+        if greeting > 0, folded.count > greeting, names.contains(folded[greeting]) || shortNames.contains(folded[greeting]), VoiceCommands.sameSentence(words, 0, greeting) {
+            if VoiceCommands.looseGreetings.contains(first), folded.count > greeting + 1, !words[greeting + 1].afterPause { return nil }
+            return greeting + 1
+        }
         guard !strict else { return nil }
         // Once the utterance is over: "Verba" after a weak greeting ("I Verba scrivi…"),
         // or a weak greeting and Verb that make up the whole utterance ("A verb.", "Everb.").
@@ -313,7 +322,9 @@ extension VoiceCommands.Phrases {
         guard let last = folded.last else { return false }
         if isJoinedWake(last, greetings: VoiceCommands.wakeGreetings) { return true }
         guard names.contains(last) || shortNames.contains(last), folded.count >= 2 else { return false }
-        if VoiceCommands.wakeGreetings.contains(folded[folded.count - 2]) { return true }
+        let greeting = folded[folded.count - 2]
+        if VoiceCommands.looseGreetings.contains(greeting) { return folded.count == 2 || words[folded.count - 2].afterPause }
+        if VoiceCommands.wakeGreetings.contains(greeting) { return true }
         return VoiceCommands.splitGreetings.contains { folded.count > $0.count && Array(folded[(folded.count - 1 - $0.count)..<(folded.count - 1)]) == $0 }
     }
 
@@ -377,8 +388,12 @@ extension VoiceCommands.Phrases {
                 // "e i" inside a sentence, only before the name itself: "i nomi e i verbi, basta" is speech.
                 let first = nameIndex - greeting
                 let strong = split != nil ? first == 0 || words[first].opensSentence : greeting > 0 && VoiceCommands.wakeGreetings.contains(folded[first])
+                // A weak greeting before the name itself counts where a pause sets it apart, or with no
+                // pause between the name and the command: "e i verb interrompi", "tutto, e verb stop";
+                // "I need a verb, done" and "con Luca e Marco, basta" are sentences.
+                let setApart = first == 0 || words[first].opensSentence || words[first].afterPause || !words[nameIndex + 1].afterPause
                 // Verb needs its greeting, in the same sentence as the command: "a verb. Stop." is two sentences.
-                if shortNames.union(closingOnlyNames).contains(name), greeting > 0, strong || exactNames.contains(name), VoiceCommands.sameSentence(words, first, end - 1) { return (first, ending) }
+                if shortNames.union(closingOnlyNames).contains(name), greeting > 0, strong || (exactNames.contains(name) && setApart), VoiceCommands.sameSentence(words, first, end - 1) { return (first, ending) }
                 if isJoinedWake(name, greetings: VoiceCommands.greetings) { return (nameIndex, ending) }
             }
         }

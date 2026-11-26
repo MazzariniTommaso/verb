@@ -2,33 +2,39 @@
 import AppKit
 import SwiftUI
 
-/// Semantic colours for AppKit. Each resolves to its light or dark value from the drawing appearance.
+/// Semantic colours for AppKit. Each resolves to its light or dark value from the drawing appearance,
+/// and to a stronger one of each with Increase Contrast.
 enum NSPalette {
-    static let surfacePage = NSColor.verb(light: 0xF9F4EB, 1.00, dark: 0x191512, 1.00)
-    static let surfaceRaised = NSColor.verb(light: 0xFDFAF4, 1.00, dark: 0x221E1A, 1.00)
-    static let surfaceSunken = NSColor.verb(light: 0xF0EAE0, 1.00, dark: 0x120F0D, 1.00)
-    static let surfaceSelected = NSColor.verb(light: 0xFDFAF4, 1.00, dark: 0x3A342F, 1.00)
-    static let surfaceInverse = NSColor.verb(light: 0x27221D, 1.00, dark: 0xEEE9DF, 1.00)
-    static let surfaceInverseHover = NSColor.verb(light: 0x3A342F, 1.00, dark: 0xDCD7CD, 1.00)
-    static let textPrimary = NSColor.verb(light: 0x27221D, 1.00, dark: 0xEEE9DF, 1.00)
-    static let textSecondary = NSColor.verb(light: 0x615B55, 1.00, dark: 0xB7B2AA, 1.00)
-    static let textTertiary = NSColor.verb(light: 0x756F69, 1.00, dark: 0x9F9B93, 1.00)
-    static let textOnInverse = NSColor.verb(light: 0xFDFAF4, 1.00, dark: 0x27221D, 1.00)
-    static let accent = NSColor.verb(light: 0xB43B27, 1.00, dark: 0xEA856A, 1.00)
-    static let accentStrong = NSColor.verb(light: 0x9C2C20, 1.00, dark: 0xF49F81, 1.00)
-    static let accentTint = NSColor.verb(light: 0xB43B27, 0.09, dark: 0xEA856A, 0.14)
-    static let borderSubtle = NSColor.verb(light: 0x27221D, 0.10, dark: 0xEEE9DF, 0.12)
-    static let borderStrong = NSColor.verb(light: 0x857F78, 1.00, dark: 0x79736D, 1.00)
-    static let controlOn = NSColor.verb(light: 0x27221D, 1.00, dark: 0xEEE9DF, 1.00)
-    static let controlKnob = NSColor.verb(light: 0xFDFAF4, 1.00, dark: 0xDCD7CD, 1.00)
-    static let controlKnobOn = NSColor.verb(light: 0xFDFAF4, 1.00, dark: 0x191512, 1.00)
-    static let fillHover = NSColor.verb(light: 0x27221D, 0.05, dark: 0xEEE9DF, 0.06)
-    static let fillPressed = NSColor.verb(light: 0x27221D, 0.09, dark: 0xEEE9DF, 0.10)
-    static let success = NSColor.verb(light: 0x436737, 1.00, dark: 0x95BF87, 1.00)
-    static let warning = NSColor.verb(light: 0x8E5D1E, 1.00, dark: 0xE3B56D, 1.00)
-    static let warningTint = NSColor.verb(light: 0x8E5D1E, 0.12, dark: 0xE3B56D, 0.14)
-    static let danger = NSColor.verb(light: 0x972540, 1.00, dark: 0xEB869A, 1.00)
-    static let shadow = NSColor.verb(light: 0x2A1F14, 0.28, dark: 0x000000, 0.50)
+    static let surfacePage = NSColor.verb(light: 0xF9F4EB, 1.00, dark: 0x191512, 1.00, lightMore: 0xF9F4EB, 1.00, darkMore: 0x191512, 1.00)
+    static let surfaceRaised = NSColor.verb(light: 0xFDFAF4, 1.00, dark: 0x2A2520, 1.00, lightMore: 0xFDFAF4, 1.00, darkMore: 0x2A2520, 1.00)
+    static let surfaceSunken = NSColor.verb(light: 0xF0EAE0, 1.00, dark: 0x120F0D, 1.00, lightMore: 0xF0EAE0, 1.00, darkMore: 0x120F0D, 1.00)
+    static let surfaceOverlay = NSColor.verb(light: 0xFDFAF4, 1.00, dark: 0x332D28, 1.00, lightMore: 0xFDFAF4, 1.00, darkMore: 0x332D28, 1.00)
+    static let surfaceSelected = NSColor.verb(light: 0xFDFAF4, 1.00, dark: 0x4A433D, 1.00, lightMore: 0xFDFAF4, 1.00, darkMore: 0x4A443E, 1.00)
+    static let surfaceInverse = NSColor.verb(light: 0x27221D, 1.00, dark: 0xEEE9DF, 1.00, lightMore: 0x27221D, 1.00, darkMore: 0xEEE9DF, 1.00)
+    static let surfaceInverseHover = NSColor.verb(light: 0x3A342F, 1.00, dark: 0xDCD7CD, 1.00, lightMore: 0x3A342F, 1.00, darkMore: 0xDCD7CD, 1.00)
+    static let textPrimary = NSColor.verb(light: 0x27221D, 1.00, dark: 0xEEE9DF, 1.00, lightMore: 0x27221D, 1.00, darkMore: 0xEEE9DF, 1.00)
+    static let textSecondary = NSColor.verb(light: 0x615B55, 1.00, dark: 0xB7B2AA, 1.00, lightMore: 0x3A342F, 1.00, darkMore: 0xDCD7CD, 1.00)
+    static let textTertiary = NSColor.verb(light: 0x6B655F, 1.00, dark: 0x9F9B93, 1.00, lightMore: 0x615B55, 1.00, darkMore: 0xB7B2AA, 1.00)
+    static let textOnInverse = NSColor.verb(light: 0xFDFAF4, 1.00, dark: 0x27221D, 1.00, lightMore: 0xFDFAF4, 1.00, darkMore: 0x27221D, 1.00)
+    static let accent = NSColor.verb(light: 0xB43B27, 1.00, dark: 0xEA856A, 1.00, lightMore: 0x9C2C20, 1.00, darkMore: 0xEA856A, 1.00)
+    static let accentStrong = NSColor.verb(light: 0x9C2C20, 1.00, dark: 0xF49F81, 1.00, lightMore: 0x9C2C20, 1.00, darkMore: 0xF49F81, 1.00)
+    static let accentTint = NSColor.verb(light: 0xB43B27, 0.09, dark: 0xEA856A, 0.14, lightMore: 0xB43B27, 0.16, darkMore: 0xEA856A, 0.22)
+    static let borderSubtle = NSColor.verb(light: 0x27221D, 0.10, dark: 0xEEE9DF, 0.12, lightMore: 0x857F78, 1.00, darkMore: 0x79736D, 1.00)
+    static let borderStrong = NSColor.verb(light: 0x857F78, 1.00, dark: 0x79736D, 1.00, lightMore: 0x615B55, 1.00, darkMore: 0x9F9B93, 1.00)
+    static let controlOn = NSColor.verb(light: 0x27221D, 1.00, dark: 0xEEE9DF, 1.00, lightMore: 0x27221D, 1.00, darkMore: 0xEEE9DF, 1.00)
+    static let controlKnob = NSColor.verb(light: 0xFDFAF4, 1.00, dark: 0xDCD7CD, 1.00, lightMore: 0xFDFAF4, 1.00, darkMore: 0xDCD7CD, 1.00)
+    static let controlKnobOn = NSColor.verb(light: 0xFDFAF4, 1.00, dark: 0x191512, 1.00, lightMore: 0xFDFAF4, 1.00, darkMore: 0x191512, 1.00)
+    static let fillHover = NSColor.verb(light: 0x27221D, 0.05, dark: 0xEEE9DF, 0.06, lightMore: 0x27221D, 0.10, darkMore: 0xEEE9DF, 0.10)
+    static let fillPressed = NSColor.verb(light: 0x27221D, 0.09, dark: 0xEEE9DF, 0.10, lightMore: 0x27221D, 0.18, darkMore: 0xEEE9DF, 0.20)
+    static let success = NSColor.verb(light: 0x436737, 1.00, dark: 0x95BF87, 1.00, lightMore: 0x436737, 1.00, darkMore: 0x95BF87, 1.00)
+    static let warning = NSColor.verb(light: 0x8E5D1E, 1.00, dark: 0xE3B56D, 1.00, lightMore: 0x8E5D1E, 1.00, darkMore: 0xE3B56D, 1.00)
+    static let warningTint = NSColor.verb(light: 0x8E5D1E, 0.12, dark: 0xE3B56D, 0.14, lightMore: 0x8E5D1E, 0.18, darkMore: 0xE3B56D, 0.22)
+    static let danger = NSColor.verb(light: 0x972540, 1.00, dark: 0xEB869A, 1.00, lightMore: 0x972540, 1.00, darkMore: 0xEB869A, 1.00)
+    static let shadow = NSColor.verb(light: 0x2A1F14, 0.28, dark: 0x000000, 0.50, lightMore: 0x2A1F14, 0.28, darkMore: 0x000000, 0.50)
+    static let surfaceNotch = NSColor.verb(light: 0x000000, 1.00, dark: 0x000000, 1.00, lightMore: 0x000000, 1.00, darkMore: 0x000000, 1.00)
+    static let textOnNotch = NSColor.verb(light: 0xEEE9DF, 1.00, dark: 0xEEE9DF, 1.00, lightMore: 0xEEE9DF, 1.00, darkMore: 0xEEE9DF, 1.00)
+    static let textOnNotchSecondary = NSColor.verb(light: 0xB7B2AA, 1.00, dark: 0xB7B2AA, 1.00, lightMore: 0xB7B2AA, 1.00, darkMore: 0xB7B2AA, 1.00)
+    static let accentOnNotch = NSColor.verb(light: 0xEA856A, 1.00, dark: 0xEA856A, 1.00, lightMore: 0xEA856A, 1.00, darkMore: 0xEA856A, 1.00)
 }
 
 /// Semantic colours for SwiftUI.
@@ -36,6 +42,7 @@ enum Palette {
     static let surfacePage = Color(nsColor: NSPalette.surfacePage)
     static let surfaceRaised = Color(nsColor: NSPalette.surfaceRaised)
     static let surfaceSunken = Color(nsColor: NSPalette.surfaceSunken)
+    static let surfaceOverlay = Color(nsColor: NSPalette.surfaceOverlay)
     static let surfaceSelected = Color(nsColor: NSPalette.surfaceSelected)
     static let surfaceInverse = Color(nsColor: NSPalette.surfaceInverse)
     static let surfaceInverseHover = Color(nsColor: NSPalette.surfaceInverseHover)
@@ -58,6 +65,10 @@ enum Palette {
     static let warningTint = Color(nsColor: NSPalette.warningTint)
     static let danger = Color(nsColor: NSPalette.danger)
     static let shadow = Color(nsColor: NSPalette.shadow)
+    static let surfaceNotch = Color(nsColor: NSPalette.surfaceNotch)
+    static let textOnNotch = Color(nsColor: NSPalette.textOnNotch)
+    static let textOnNotchSecondary = Color(nsColor: NSPalette.textOnNotchSecondary)
+    static let accentOnNotch = Color(nsColor: NSPalette.accentOnNotch)
 }
 
 /// Type sizes in points. Display sizes use New York, everything else SF Pro.
@@ -118,6 +129,35 @@ enum Sizing {
     static let contentMax: CGFloat = 880
     static let overlayWidth: CGFloat = 400
     static let overlayHeight: CGFloat = 60
+    static let windowMinWidth: CGFloat = 720
+    static let windowMinHeight: CGFloat = 560
+    static let windowMaxWidth: CGFloat = 1600
+    static let windowMaxHeight: CGFloat = 1200
+    static let notepadMinWidth: CGFloat = 480
+    static let notepadMinHeight: CGFloat = 340
+    static let notepadMaxWidth: CGFloat = 1200
+    static let notepadMaxHeight: CGFloat = 1000
+    static let notepadListBelow: CGFloat = 600
+    static let islandWing: CGFloat = 44
+    static let islandTabWidth: CGFloat = 56
+    static let islandTabHeight: CGFloat = 12
+    static let islandNear: CGFloat = 110
+    static let overlayOpenWidth: CGFloat = 440
+    static let overlayBoxHeight: CGFloat = 253
+    static let columnParagraph: CGFloat = 540
+    static let columnEditor: CGFloat = 560
+    static let columnForm: CGFloat = 720
+    static let gridLarge: CGFloat = 1040
+    static let gridExtraLarge: CGFloat = 1200
+    static let searchWidth: CGFloat = 360
+    static let pageMediumFrom: CGFloat = 640
+    static let pageLargeFrom: CGFloat = 1040
+    static let pageExtraLargeFrom: CGFloat = 1360
+    static let pageTop: CGFloat = 48
+    static let windowButtonsLeft: CGFloat = 9
+    static let windowButtonsTop: CGFloat = 6
+    static let windowButtonsWidth: CGFloat = 54
+    static let windowButtonsHeight: CGFloat = 16
 }
 
 /// Durations in seconds.
@@ -127,13 +167,20 @@ enum Motion {
     static let slow: Double = 0.32
     static let linger: Double = 2
     static let lingerFailure: Double = 5
+    static let message: Double = 3
 }
 
 extension NSColor {
-    static func verb(light: UInt32, _ lightAlpha: CGFloat, dark: UInt32, _ darkAlpha: CGFloat) -> NSColor {
+    static func verb(light: UInt32, _ lightAlpha: CGFloat, dark: UInt32, _ darkAlpha: CGFloat,
+                     lightMore: UInt32, _ lightMoreAlpha: CGFloat, darkMore: UInt32, _ darkMoreAlpha: CGFloat) -> NSColor {
         NSColor(name: nil) { appearance in
-            let isDark = appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
-            let (value, alpha) = isDark ? (dark, darkAlpha) : (light, lightAlpha)
+            let (value, alpha): (UInt32, CGFloat)
+            switch appearance.bestMatch(from: [.aqua, .darkAqua, .accessibilityHighContrastAqua, .accessibilityHighContrastDarkAqua]) {
+            case .darkAqua?: (value, alpha) = (dark, darkAlpha)
+            case .accessibilityHighContrastAqua?: (value, alpha) = (lightMore, lightMoreAlpha)
+            case .accessibilityHighContrastDarkAqua?: (value, alpha) = (darkMore, darkMoreAlpha)
+            default: (value, alpha) = (light, lightAlpha)
+            }
             return NSColor(srgbRed: CGFloat((value >> 16) & 0xFF) / 255, green: CGFloat((value >> 8) & 0xFF) / 255, blue: CGFloat(value & 0xFF) / 255, alpha: alpha)
         }
     }

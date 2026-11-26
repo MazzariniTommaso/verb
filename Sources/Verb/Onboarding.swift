@@ -33,12 +33,17 @@ extension AppModel {
     /// Opens the welcome at its first page.
     func startWelcome() {
         tourStop = nil
+        settings.welcomeTried = nil
         welcome = .hello
         showWindow?()
     }
+    /// Where an unfinished welcome was left, to carry on from.
+    var welcomeResume: WelcomeStep { settings.welcomeStep.flatMap(WelcomeStep.init(rawValue:)) ?? .hello }
+    var welcomeTriedBefore: Set<PracticeGesture> { Set(settings.welcomeTried?.compactMap(PracticeGesture.init(rawValue:)) ?? []) }
     /// The welcome is done, or passed over: it won't open by itself again.
     func finishWelcome(tour: Bool) {
         if !settings.onboardingComplete { settings.onboardingComplete = true }
+        settings.welcomeStep = nil; settings.welcomeTried = nil
         welcome = nil
         page = .home
         if tour { startTour(afterWelcome: true) }
@@ -51,6 +56,8 @@ struct WelcomeView: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.lang) private var t
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.pageLayout) private var layout
+    private var margin: CGFloat { layout.margin }
     let step: WelcomeStep
     /// The practice sheet and the gestures tried on it, kept while you move between pages.
     @State private var sheet: String
@@ -71,7 +78,7 @@ struct WelcomeView: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: Space.lg) {
                         if let notice = model.notice {
-                            NoticeBanner(text: t.message(notice), dismissLabel: t("Dismiss", "Chiudi")) { model.notice = nil }
+                            NoticeBanner(text: t.message(notice), dismissLabel: t("Dismiss", "Chiudi")) { model.dismissNotice() }
                         }
                         page
                     }
@@ -79,7 +86,7 @@ struct WelcomeView: View {
                     // title always at the same height: the first page alone stands in the middle.
                     .frame(maxWidth: columnWidth, alignment: .leading)
                     .frame(maxWidth: step == .hello ? columnWidth : Sizing.contentMax, alignment: .leading)
-                    .padding(.horizontal, Space.page)
+                    .padding(.horizontal, margin)
                     .padding(.top, step == .hello ? Space.xl : Space.xxl)
                     .padding(.bottom, Space.xl)
                     .frame(maxWidth: .infinity, minHeight: proxy.size.height, alignment: step == .hello ? .center : .top)
@@ -87,7 +94,8 @@ struct WelcomeView: View {
             }
             .id(step)
             .transition(reduceMotion ? .opacity : .asymmetric(insertion: .opacity.combined(with: .offset(x: 28)), removal: .opacity))
-            if step != .hello { footer }
+            // Content that runs under the footer ends at a line, not at a cut.
+            if step != .hello { Hairline(); footer }
         }
         .background(Palette.surfacePage)
         // VoiceOver hears where the welcome is now.
@@ -98,6 +106,7 @@ struct WelcomeView: View {
             if gesture == .hold, heldText == nil { heldText = writing.text }
             withAnimation(.easeOut(duration: Motion.base)) { _ = tried.insert(gesture) }
             Self.ticked = tried.union([gesture])
+            model.settings.welcomeTried = Self.ticked.map(\.rawValue).sorted()
         }
     }
 
@@ -134,7 +143,7 @@ struct WelcomeView: View {
         switch step {
         case .hello: return true
         case .permissions: return model.microphoneGranted && model.accessibilityGranted
-        case .models: return model.settings.speechProvider == .endpoint || model.speechInstalled
+        case .models: return model.speechReady
         case .practice: return !tried.isEmpty
         case .ready: return false
         }
@@ -162,7 +171,7 @@ struct WelcomeView: View {
                 } else if step != .ready {
                     Button(t("Skip the welcome", "Salta l’introduzione")) { finish(tour: false) }
                         .buttonStyle(VerbButtonStyle(kind: .quiet, compact: true))
-                        .help(t("Home keeps what is still to set up.", "La Home tiene ciò che resta da configurare."))
+                        .help(t("Home keeps what is still to set up.", "In Home trovi ciò che resta da configurare."))
                 }
             }
         }
@@ -185,8 +194,10 @@ struct WelcomeView: View {
                 if step == .practice || pageHasAction { button } else { button.keyboardShortcut(.defaultAction) }
             }
         }
-        .frame(maxWidth: Sizing.contentMax)
-        .padding(.horizontal, Space.page)
+        // As wide as the page's column, at its left edge, so Continue sits under the content.
+        .frame(maxWidth: columnWidth)
+        .frame(maxWidth: Sizing.contentMax, alignment: .leading)
+        .padding(.horizontal, margin)
         .padding(.vertical, Space.base)
         .frame(maxWidth: .infinity)
     }
@@ -260,8 +271,8 @@ private struct HelloPage: View {
                     .font(Typeface.display(TypeSize.hero)).tracking(Tracking.display).foregroundStyle(Palette.textPrimary)
                     .fixedSize(horizontal: false, vertical: true).accessibilityAddTraits(.isHeader)
                 let keys = model.dictationKeys(t), here = model.settings.speechProvider == .onDevice
-                Text(t("Hold \(keys) and talk. Verb writes what you say wherever your cursor is: in Mail, in Slack, in your editor. It hears Italian and English\(here ? ", on this Mac" : "").",
-                       "Tieni premuto \(keys) e parla. Verb scrive ciò che dici dove si trova il cursore: in Mail, in Slack, nel tuo editor. Capisce italiano e inglese\(here ? ", su questo Mac" : "")."))
+                Text(t("Hold \(keys) and talk. Verb writes what you say wherever your cursor is: in Mail, in Slack, in your editor. It hears Italian, English and many other languages\(here ? ", on this Mac" : "").",
+                       "Tieni premuto \(keys) e parla. Verb scrive ciò che dici dove si trova il cursore: in Mail, in Slack, nel tuo editor. Capisce italiano, inglese e molte altre lingue\(here ? ", su questo Mac" : "")."))
                     .font(Typeface.text(TypeSize.callout)).foregroundStyle(Palette.textSecondary).lineSpacing(leading(TypeSize.callout, Leading.reading))
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.top, Space.lg)
@@ -278,8 +289,9 @@ private struct HelloPage: View {
     }
 }
 
-/// Verb at work, on a loop: you speak into Mail, the words form above the overlay, and the tidy
-/// sentence lands where the cursor was. With Reduce Motion it holds the last moment.
+/// Verb at work: you speak into Mail, the words form above the overlay, and the tidy sentence
+/// lands where the cursor was. It plays twice, then holds the written moment, with a button to
+/// play it again. With Reduce Motion it holds the last moment.
 private struct SpeakingDemo: View {
     @Environment(\.lang) private var t
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -290,6 +302,12 @@ private struct SpeakingDemo: View {
         let written = t("Let’s meet on Wednesday at three.", "Ci vediamo mercoledì alle tre.")
         VStack(spacing: Space.xl) {
             mail(written: moment == .written ? written : nil)
+                .overlay(alignment: .topTrailing) {
+                    if voice.resting && !reduceMotion {
+                        Button { voice.replay() } label: { Label(t("Play again", "Riproduci"), systemImage: "play.fill") }
+                            .buttonStyle(VerbButtonStyle(kind: .quiet, compact: true)).padding(.top, 2).padding(.trailing, Space.xs)
+                    }
+                }
             VStack(spacing: -Space.xs) {
                 words(spoken, moment: moment)
                 pill(moment)
@@ -359,14 +377,14 @@ private struct SpeakingDemo: View {
         HStack(spacing: Space.md) {
             switch moment {
             case .waiting, .speaking:
-                LiveDot(meter: voice.meter, size: 18)
-                InkStroke(meter: voice.meter, active: !reduceMotion, still: reduceMotion).frame(width: 118, height: 26)
+                BreathingDot(meter: voice.meter, color: Palette.accent)
+                VoiceDotsView(meter: voice.meter, color: Palette.textPrimary)
             case .tidying:
                 InkDrops(width: 24, height: 14)
-                ShimmerText(text: t("Tidying up", "Metto in bella"), font: Typeface.display(TypeSize.callout).italic(), shimmer: !reduceMotion)
+                ShimmerText(text: t("Tidying up", "Rifinisco"), font: Typeface.display(TypeSize.callout).italic(), shimmer: !reduceMotion)
             case .written:
                 OutcomeIcon(outcome: .delivered)
-                Text(t("Pasted into Mail", "Incollato in Mail")).font(Typeface.display(TypeSize.callout).italic()).foregroundStyle(Palette.textPrimary)
+                Text(t("Pasted into Mail", "Incollata in Mail")).font(Typeface.display(TypeSize.callout).italic()).foregroundStyle(Palette.textPrimary)
             }
         }
         .padding(.horizontal, Space.base)
@@ -377,12 +395,13 @@ private struct SpeakingDemo: View {
     }
 }
 
-/// The cursor in the demo's message, blinking like a real one.
+/// The cursor in the demo's message, blinking like a real one for five seconds, then still.
 private struct Caret: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var shown = Date()
     var body: some View {
         TimelineView(.periodic(from: .now, by: 0.53)) { timeline in
-            let on = reduceMotion || DemoVoice.frozen != nil || Int(timeline.date.timeIntervalSinceReferenceDate / 0.53) % 2 == 0
+            let on = reduceMotion || DemoVoice.frozen != nil || timeline.date.timeIntervalSince(shown) > 5 || Int(timeline.date.timeIntervalSinceReferenceDate / 0.53) % 2 == 0
             Rectangle().fill(Palette.accent).frame(width: 2, height: 19).opacity(on ? 1 : 0)
         }
         .accessibilityHidden(true)
@@ -396,6 +415,8 @@ private struct Caret: View {
         var isSpeaking: Bool { if case .speaking = self { return true }; return false }
     }
     @Published private(set) var moment: Moment = .waiting
+    /// Played its two rounds and holds the written moment.
+    @Published private(set) var resting = false
     let meter = LevelMeter()
     private var timer: Timer?
     private var started = Date()
@@ -410,14 +431,18 @@ private struct Caret: View {
             return
         }
         guard timer == nil else { return }
-        started = Date()
+        started = Date(); resting = false
         // Like the microphone, a tenth of a second of levels at a time.
         timer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in Task { @MainActor in self?.tick() } }
     }
     func stop() { timer?.invalidate(); timer = nil }
+    func replay() { stop(); run() }
 
     private func tick() {
-        let time = Date().timeIntervalSince(started).truncatingRemainder(dividingBy: Self.loop)
+        let elapsed = Date().timeIntervalSince(started)
+        // Two rounds are enough to follow; then the written moment stays, as with Reduce Motion.
+        if elapsed >= Self.loop * 2 - 0.5 { stop(); moment = .written; resting = true; return }
+        let time = elapsed.truncatingRemainder(dividingBy: Self.loop)
         meter.push((0..<10).map { Self.level(at: time - 0.1 + Double($0) * LevelMeter.step) }, at: Date().timeIntervalSinceReferenceDate)
         let next = Self.moment(at: time)
         if next != moment { moment = next }
@@ -451,7 +476,7 @@ private struct PermissionsPage: View {
             Card(lifted: true) {
                 PermissionRow(symbol: "mic", title: t("Microphone", "Microfono"), granted: model.microphoneGranted, allowed: t("Allowed", "Consentito"),
                               detail: micRefused && !model.microphoneGranted
-                                ? t("Microphone access is off for Verb. Turn it on in System Settings, then come back.", "L’accesso al microfono è spento per Verb. Attivalo in Impostazioni di Sistema, poi torna qui.")
+                                ? t("Microphone access is off for Verb. Turn it on in System Settings, then come back.", "L’accesso al microfono è disattivato per Verb. Attivalo in Impostazioni di Sistema, poi torna qui.")
                                 : t("Verb listens only while you dictate or record a meeting, and for “Hey \(model.settings.voiceOptions.spokenName)” if you turn it on.", "Verb ascolta solo mentre detti o registri una riunione e, se lo attivi, per sentire “Ehi \(model.settings.voiceOptions.spokenName)”.")) {
                     if micRefused {
                         Button(t("Open System Settings", "Apri Impostazioni di Sistema")) { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!) }
@@ -480,6 +505,7 @@ private struct PermissionsPage: View {
                     .padding(.leading, 52).padding(.bottom, Space.sm)
                     .transition(.opacity)
                 }
+                if model.microphoneGranted { Hairline(); MicrophoneCheckRow() }
             }
             Label {
                 Text(t("Verb takes no screenshots. Your voice stays on this Mac unless you choose a server in Models.", "Verb non cattura lo schermo. La tua voce resta su questo Mac, a meno che tu non scelga un server in Modelli."))
@@ -531,7 +557,7 @@ private struct ModelsPage: View {
     var body: some View {
         StepPage(title: t("Where your voice becomes text", "Dove la voce diventa testo"),
                  detail: t("Recognition turns your voice into words. A writing model can tidy them up. Both can work offline, on this Mac.",
-                           "Il riconoscimento trasforma la voce in parole. Un modello di scrittura può metterle in bella. Entrambi possono lavorare offline, su questo Mac.")) {
+                           "Il riconoscimento trasforma la voce in parole. Un modello di scrittura può rifinirle. Entrambi possono lavorare offline, su questo Mac.")) {
             Card(lifted: true) { speech }
             Card { writing }
         }
@@ -547,7 +573,8 @@ private struct ModelsPage: View {
         let local = model.settings.speechProvider == .onDevice
         let catalog = try? SpeechCatalog.model(model.settings.localModel)
         let name = catalog.map { t.engine($0.id) } ?? model.settings.localModel
-        let size = catalog.map { ByteCountFormatter.string(fromByteCount: $0.downloadBytes, countStyle: .file) } ?? ""
+        let otherLanguages = max(0, (catalog?.languages.count ?? 2) - 2)
+        let size = catalog.map { t.size($0.downloadBytes) } ?? ""
         return VStack(alignment: .leading, spacing: Space.md) {
             Rubric(text: t("Needed to dictate", "Serve per dettare"))
             HStack(alignment: .firstTextBaseline) {
@@ -560,15 +587,17 @@ private struct ModelsPage: View {
             }
             .padding(.top, -Space.xs)
             Text(local
-                 ? t("\(name) hears Italian and English, even in the same sentence, with no internet. Your audio never leaves the Mac.", "\(name) capisce italiano e inglese, anche nella stessa frase, senza internet. L’audio non esce mai dal Mac.")
+                 ? t("\(name) hears Italian and English, even in the same sentence, and \(otherLanguages) other languages, with no internet. Your audio never leaves the Mac.",
+                     "\(name) capisce italiano e inglese, anche nella stessa frase, e altre \(otherLanguages) lingue, senza internet. L’audio non esce mai dal Mac.")
                  : t("Recognition runs on the server you chose: \(URL(string: model.settings.speechEndpoint)?.host ?? model.settings.speechEndpoint). You can change it in Models.", "Il riconoscimento lavora sul server che hai scelto: \(URL(string: model.settings.speechEndpoint)?.host ?? model.settings.speechEndpoint). Puoi cambiarlo in Modelli."))
                 .font(Typeface.text(TypeSize.body)).foregroundStyle(Palette.textSecondary).lineSpacing(leading(TypeSize.body, Leading.ui))
                 .frame(maxWidth: 480, alignment: .leading).fixedSize(horizontal: false, vertical: true)
             if local && !model.speechInstalled {
                 if model.downloadingSpeech { DownloadProgress() }
                 else {
-                    Button(t("Download the speech model · \(size)", "Scarica il modello vocale · \(size)")) { model.downloadSpeech() }
+                    Button(model.downloadStopped ? t("Resume the download", "Riprendi il download") : t("Download the speech model · \(size)", "Scarica il modello vocale · \(size)")) { model.downloadSpeech() }
                         .buttonStyle(VerbButtonStyle(kind: .primary)).disabled(model.downloadingWriter)
+                    if model.downloadStopped { Text(t("Stopped. It carries on from where it was.", "Fermato. Riparte da dove era arrivato.")).font(Typeface.text(TypeSize.footnote)).foregroundStyle(Palette.textSecondary) }
                 }
             }
         }
@@ -576,25 +605,15 @@ private struct ModelsPage: View {
 
     private var writing: some View {
         VStack(alignment: .leading, spacing: Space.md) {
-            Rubric(text: t("Optional", "Facoltativo"))
+            Overline(text: t("Optional", "Facoltativo"))
             SectionHeading(title: t("Writing model", "Modello di scrittura")).padding(.top, -Space.xs)
-            Text(t("Quick rules take out fillers and stumbled repeats in every style but Verbatim. A writing model also resolves what you correct out loud (“Tuesday, actually Wednesday”), lists and long dictations, and it runs voice edits and transforms.",
-                   "Le regole rapide tolgono intercalari e ripetizioni in ogni stile tranne Alla lettera. Un modello di scrittura risolve anche le correzioni dette a voce (“martedì, anzi mercoledì”), gli elenchi e le dettature lunghe, e fa funzionare modifiche a voce e trasformazioni."))
+            Text(t("Quick rules take out fillers and repeats. A writing model also resolves what you correct out loud (“Tuesday, actually Wednesday”) and runs voice edits and transforms.",
+                   "Le regole rapide tolgono intercalari e ripetizioni. Un modello di scrittura risolve anche le correzioni dette a voce (“martedì, anzi mercoledì”) e fa funzionare modifiche a voce e trasformazioni."))
                 .font(Typeface.text(TypeSize.body)).foregroundStyle(Palette.textSecondary).lineSpacing(leading(TypeSize.body, Leading.ui))
                 .frame(maxWidth: 480, alignment: .leading).fixedSize(horizontal: false, vertical: true)
-            Segmented(title: t("Writing model", "Modello di scrittura"), values: CleanupProvider.allCases, selection: $model.settings.cleanupProvider, label: shortTitle)
+            ChoiceCards(title: t("Writing model", "Modello di scrittura"), values: CleanupProvider.allCases, selection: $model.settings.cleanupProvider, label: { $0.title(t) }, detail: { $0.detail(t) })
                 .padding(.top, Space.xs)
             provider
-        }
-    }
-
-    /// The Models page's names for the choices, the server's shortened to fit.
-    private func shortTitle(_ provider: CleanupProvider) -> String {
-        switch provider {
-        case .local: return t("On this Mac", "Su questo Mac")
-        case .harness: return t("My subscriptions", "I miei abbonamenti")
-        case .endpoint: return t("Server", "Server")
-        case .off: return t("No AI cleanup", "Nessuna rifinitura AI")
         }
     }
 
@@ -603,10 +622,10 @@ private struct ModelsPage: View {
         case .local:
             if !model.writer.available {
                 HStack(alignment: .firstTextBaseline, spacing: Space.md) {
-                    note(t("A private model on this Mac, run by Ollama, a free app. Install it, then come back to this page.", "Un modello privato su questo Mac, fatto girare da Ollama, un’app gratuita. Installala, poi torna a questa pagina."))
+                    note(t("A private model on this Mac, run by Ollama, a free app. Install it, then come back to this page.", "Un modello privato su questo Mac, gestito da Ollama, un’app gratuita. Installala, poi torna a questa pagina."))
                     Spacer(minLength: Space.sm)
-                    Link(destination: URL(string: "https://ollama.com/download/mac")!) { Label(t("Install Ollama", "Installa Ollama"), systemImage: "arrow.up.right") }
-                        .font(Typeface.text(TypeSize.footnote, .medium)).foregroundStyle(Palette.accent).fixedSize()
+                    Button { NSWorkspace.shared.open(URL(string: "https://ollama.com/download/mac")!) } label: { Label(t("Install Ollama", "Installa Ollama"), systemImage: "arrow.up.right") }
+                        .buttonStyle(VerbButtonStyle(kind: .link)).fixedSize()
                 }
             } else if model.writerModels.contains(model.settings.cleanupModel) {
                 StatusLabel(text: t("\(Self.writerName(model.settings.cleanupModel)) is ready on this Mac, offline.", "\(Self.writerName(model.settings.cleanupModel)) è pronto su questo Mac, offline."), symbol: "checkmark.circle", tone: .success)
@@ -655,9 +674,12 @@ private struct DownloadProgress: View {
                 Text(t.message(model.downloadStatus)).font(Typeface.text(TypeSize.footnote)).foregroundStyle(Palette.textPrimary).lineLimit(1)
                 Spacer()
                 Text(model.downloadProgress.formatted(.percent.precision(.fractionLength(0)).locale(t.locale))).font(Typeface.text(TypeSize.footnote)).monospacedDigit().foregroundStyle(Palette.textSecondary)
-                Button(t("Cancel", "Annulla")) { model.cancelDownload() }.buttonStyle(VerbButtonStyle(kind: .quiet, compact: true))
+                Button(t("Stop", "Ferma")) { model.cancelDownload() }.buttonStyle(VerbButtonStyle(kind: .quiet, compact: true))
             }
             ProgressView(value: model.downloadProgress).tint(Palette.controlOn)
+                .accessibilityLabel(t.message(model.downloadStatus)).accessibilityValue(model.downloadProgress.formatted(.percent.precision(.fractionLength(0)).locale(t.locale)))
+            let detail = model.downloadDetail(t)
+            if !detail.isEmpty { Text(detail).font(Typeface.text(TypeSize.caption)).monospacedDigit().foregroundStyle(Palette.textSecondary) }
         }
     }
 }
@@ -684,6 +706,9 @@ private struct PracticePage: View {
             } else if !model.accessibilityGranted {
                 blocker(t("Without Accessibility, \(model.dictationKeys(t)) can’t start a dictation. Use Dictate on the sheet, or allow it now.", "Senza Accessibilità, \(model.dictationKeys(t)) non può avviare la dettatura. Usa Detta sul foglio, oppure consentila ora."),
                         action: (t("Open System Settings", "Apri Impostazioni di Sistema"), { model.requestAccessibility() }))
+            } else if model.globeKeyConflict {
+                blocker(t("If holding fn also opens emoji or macOS dictation, set “Press 🌐 key to” to “Do Nothing” in Keyboard settings.", "Se tenere fn apre anche le emoji o la dettatura di macOS, imposta “Premi il tasto 🌐 per” su “Non fare nulla” nelle impostazioni Tastiera."),
+                        action: (t("Open Keyboard Settings", "Apri Impostazioni Tastiera"), { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.Keyboard-Settings.extension")!) }))
             }
             HStack(alignment: .top, spacing: Space.xl) {
                 VStack(alignment: .leading, spacing: Space.xs) {
@@ -730,11 +755,13 @@ private struct GestureRow: View {
                 else { Text("\(gesture.rawValue + 1)").font(Typeface.display(TypeSize.title3).italic()).foregroundStyle(current ? Palette.accent : Palette.textTertiary) }
             }
             .frame(width: 18, height: 24)
+            // Without a writing model only the number and the keys fade: why it can't be tried stays readable.
+            .opacity(needsWriter ? 0.6 : 1)
             VStack(alignment: .leading, spacing: Space.sm) {
                 HStack(alignment: .center, spacing: Space.sm) {
-                    Text(title).font(Typeface.text(TypeSize.body, .semibold)).foregroundStyle(done ? Palette.textSecondary : Palette.textPrimary)
+                    Text(title).font(Typeface.text(TypeSize.body, .semibold)).foregroundStyle(done || needsWriter ? Palette.textSecondary : Palette.textPrimary)
                     Spacer(minLength: Space.xs)
-                    LitKeys(parts: parts(keys), lit: active)
+                    LitKeys(parts: parts(keys), lit: active).opacity(needsWriter ? 0.6 : 1)
                 }
                 Text(instruction(keys)).font(Typeface.text(TypeSize.footnote)).foregroundStyle(Palette.textSecondary).lineSpacing(2).fixedSize(horizontal: false, vertical: true)
                 if let phrase, !needsWriter {
@@ -748,7 +775,6 @@ private struct GestureRow: View {
         .padding(Space.md)
         .background { if current { RoundedRectangle(cornerRadius: Radius.md, style: .continuous).fill(Palette.surfaceRaised).shadow(color: Palette.shadow.opacity(0.3), radius: 6, y: 2) } }
         .overlay { if current { RoundedRectangle(cornerRadius: Radius.md, style: .continuous).strokeBorder(Palette.borderSubtle) } }
-        .opacity(needsWriter ? 0.6 : 1)
         .accessibilityElement(children: .combine)
     }
 
@@ -786,7 +812,7 @@ private struct GestureRow: View {
             return t("Hold \(dictate), say this, then let go:", "Tieni premuto \(dictate), di’ questa frase, poi lascia:")
         case .handsFree:
             guard let dictate else { return t("Dictate, on the sheet, starts a hands-free dictation. Space finishes it.", "Detta, sul foglio, avvia una dettatura a mani libere. Spazio la termina.") }
-            return t("Hold \(dictate) and tap Space, then let go of both. Talk as long as you like: Space finishes, Escape cancels.", "Tieni premuto \(dictate) e tocca Spazio, poi lascia entrambi. Parla quanto vuoi: Spazio termina, Esc annulla.")
+            return t("Hold \(dictate) and tap Space, then let go of both. Talk as long as you like: Space finishes, Escape cancels.", "Tieni premuto \(dictate) e premi Spazio, poi rilascia entrambi i tasti. Parla quanto vuoi: Spazio termina, Esc annulla.")
         case .edit:
             if needsWriter { return t("Needs a writing model. Once you have one in Models, try it on any text you select.", "Serve un modello di scrittura. Quando ne avrai uno in Modelli, provala su qualsiasi testo selezionato.") }
             guard let edit = keys.voiceEdit.map({ t.inlineKeys($0.label) }) else { return t("Voice edit has no keys: choose them in Settings.", "La modifica a voce non ha tasti: sceglili nelle Impostazioni.") }
@@ -858,16 +884,23 @@ private struct PracticeSheet: View {
                 if !text.isEmpty {
                     Button(t("Clear", "Svuota")) { text = "" }.buttonStyle(VerbButtonStyle(kind: .quiet, compact: true))
                 }
-                Button { model.handsFree = true; model.begin() } label: { Label(t("Dictate", "Detta"), systemImage: "mic") }
-                    .buttonStyle(VerbButtonStyle(kind: .secondary, compact: true)).disabled(model.busy || disabled)
-                    .help(t("Starts a hands-free dictation on the sheet. Space finishes.", "Avvia una dettatura a mani libere sul foglio. Spazio termina."))
+                // While it records, the same place finishes it, as on Home.
+                if model.phase == .recording {
+                    Button { model.finish() } label: { Label(t("Finish", "Termina"), systemImage: "stop.fill") }
+                        .buttonStyle(VerbButtonStyle(kind: .primary, compact: true))
+                } else {
+                    Button { model.handsFree = true; model.begin() } label: { Label(t("Dictate", "Detta"), systemImage: "mic") }
+                        .buttonStyle(VerbButtonStyle(kind: .secondary, compact: true)).disabled(model.busy || disabled)
+                        .help(model.keysCantFinish ? t("Starts a hands-free dictation on the sheet. Finish it here; Space finishes once Accessibility is on.", "Avvia una dettatura a mani libere sul foglio. Terminala da qui; Spazio termina quando l’Accessibilità è attiva.")
+                                                   : t("Starts a hands-free dictation on the sheet. Space finishes.", "Avvia una dettatura a mani libere sul foglio. Spazio termina."))
+                }
             }
             .padding(.leading, Space.base).padding(.trailing, Space.sm).frame(height: 44)
             Hairline()
             ZStack(alignment: .topLeading) {
                 NoteTextView(text: $text, practice: true)
                 if text.isEmpty {
-                    Text(t("Click here, then hold \(model.dictationKeys(t)) and speak.", "Fai clic qui, poi tieni premuto \(model.dictationKeys(t)) e parla."))
+                    Text(t("Hold \(model.dictationKeys(t)) and speak: the words go on this sheet.", "Tieni premuto \(model.dictationKeys(t)) e parla: le parole vanno su questo foglio."))
                         .font(Typeface.display(TypeSize.reading).italic()).foregroundStyle(Palette.textTertiary)
                         .padding(.leading, 25).padding(.top, 18)
                         .allowsHitTesting(false).accessibilityHidden(true)
@@ -890,6 +923,8 @@ private struct PracticeSheet: View {
                 else { InkSpinner(size: 12) }
                 Text(model.phaseTitle(t)).font(Typeface.display(TypeSize.footnote + 1).italic()).foregroundStyle(Palette.textPrimary)
                 Spacer()
+                // Escape can't reach Verb without Accessibility: this does its work. Finish is above.
+                if model.keysCantFinish, model.phase != .cancelling { Button(t("Cancel", "Annulla")) { model.cancel() }.buttonStyle(VerbButtonStyle(kind: .quiet, compact: true)) }
             } else {
                 Text(t("\(model.dictationKeys(t)) does nothing? Some keyboards don’t send it.", "\(model.dictationKeys(t)) non fa nulla? Alcune tastiere non lo inviano."))
                     .font(Typeface.text(TypeSize.caption)).foregroundStyle(Palette.textTertiary).lineLimit(1)
@@ -924,6 +959,10 @@ private struct ReadyPage: View {
                 }
                 .frame(width: 360)
             }
+            HStack(alignment: .top, spacing: Space.xl) {
+                SpeedTest()
+                if !model.coachApps.isEmpty { TryInAnApp { model.finishWelcome(tour: false) }.frame(width: 360) }
+            }
         }
     }
 }
@@ -937,7 +976,8 @@ struct KeyLegend: View {
         Grid(alignment: .leading, horizontalSpacing: Space.xl, verticalSpacing: Space.sm) {
             row(t("Dictate", "Detta"), t("hold, speak, let go", "tieni premuto, parla, lascia"), keys.dictation.map { $0.parts.map(t.keys) })
             row(t("Hands-free", "A mani libere"), t("then Space finishes, Escape cancels", "poi Spazio termina, Esc annulla"), keys.dictation.map { $0.parts.map(t.keys) + ["+", t.keys("Space")] })
-            row(t("Voice edit", "Modifica a voce"), t("hold with text selected", "tieni premuto con un testo selezionato"), keys.voiceEdit.map { $0.parts.map(t.keys) })
+            row(t("Edit or ask", "Modifica o chiedi"), t("with text selected it edits; without, ask", "con un testo selezionato modifica; senza, chiedi"), keys.voiceEdit.map { $0.parts.map(t.keys) })
+            row(t("Ask a question", "Fai una domanda"), t("hold, ask; the answer comes in the overlay", "tieni premuto, chiedi; la risposta arriva nella capsula"), keys.ask.map { $0.parts.map(t.keys) })
             row(t("Paste the last dictation", "Incolla l’ultima dettatura"), nil, keys.pasteLast.map { $0.parts.map(t.keys) })
             row(t("Copy the last dictation", "Copia l’ultima dettatura"), nil, keys.copyLast.map { $0.parts.map(t.keys) })
             row(t("Notepad", "Blocco note"), t("over any app", "sopra qualsiasi app"), keys.notepad.map { $0.parts.map(t.keys) })
@@ -1000,7 +1040,7 @@ struct MenuBarSketch: View {
 
     private var menu: some View {
         VStack(alignment: .leading, spacing: 0) {
-            MenuHeader(title: t("Ready", "Pronto"), hint: model.startHint(t), live: false)
+            MenuHeader(title: t("Ready", "Pronto"), hint: model.startHint(t))
             Hairline().padding(.horizontal, Space.sm)
             item("mic", t("Start hands-free dictation", "Avvia la dettatura a mani libere"), nil)
             item("note.text", t("Notepad", "Blocco note"), model.settings.keyOptions.notepad.map { t.keys($0.label) })

@@ -62,6 +62,23 @@ final class CoreTests: XCTestCase {
         XCTAssertEqual(try reopened.all().first?.text, "Ciao 👋")
         XCTAssertEqual(try reopened.all().first?.status, .failed)
     }
+    func testADictationCutShortBeforeAnySoundLeavesNothingBehind() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = try DataPaths(root: root)
+        try Data(count: 44).write(to: paths.audio.appendingPathComponent("empty.wav"))
+        try Data(count: 44 + 32000).write(to: paths.audio.appendingPathComponent("spoken.wav"))
+        do {
+            let store = try HistoryStore(paths: paths)
+            try store.save(DictationRecord(status: .recorded, audioName: "empty.wav"))
+            try store.save(DictationRecord(status: .recorded, audioName: "spoken.wav"))
+        }
+        let reopened = try HistoryStore(paths: paths)
+        XCTAssertEqual(try reopened.recoverInterrupted(), 1)
+        XCTAssertEqual(try reopened.all().map(\.audioName), ["spoken.wav"])
+        XCTAssertEqual(try reopened.all().first?.status, .failed)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: paths.audio.appendingPathComponent("empty.wav").path))
+    }
     func testRetentionDeletesAudioAlongWithText() throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         defer { try? FileManager.default.removeItem(at: root) }

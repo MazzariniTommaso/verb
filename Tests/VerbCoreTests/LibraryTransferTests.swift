@@ -7,7 +7,7 @@ final class LibraryTransferTests: XCTestCase {
         var parts = DateComponents(); parts.year = 2026; parts.month = 9; parts.day = 26; parts.hour = 14; parts.minute = 5
         let date = Calendar(identifier: .gregorian).date(from: parts)!
         let filled = SnippetVariables.fill("Oggi {data}, alle {ora}, {giorno}. Today {date} at {time}, {weekday}. Copied: {appunti}", now: date, clipboard: { "ciao" })
-        XCTAssertEqual(filled, "Oggi 26 settembre 2026, alle 14:05, sabato. Today September 26, 2026 at 2:05 PM, Saturday. Copied: ciao")
+        XCTAssertEqual(filled, "Oggi 26 settembre 2026, alle 14:05, sabato. Today 26 September 2026 at 14:05, Saturday. Copied: ciao")
         XCTAssertEqual(SnippetVariables.fill("Nessuna variabile {qui}", now: date), "Nessuna variabile {qui}", "unknown names stay as written")
     }
 
@@ -26,6 +26,17 @@ final class LibraryTransferTests: XCTestCase {
         let back = try LibraryTransfer.snippets(from: Data(csv.utf8), isCSV: true)
         XCTAssertEqual(back.map(\.trigger), ["la mia firma", "indirizzo"])
         XCTAssertEqual(back.map(\.expansion), snippets.map(\.expansion))
+    }
+
+    func testAnItalianExportOpensInColumnsAndComesBack() throws {
+        let snippets = [Snippet(trigger: "la mia firma", expansion: "Tommaso; Milano"), Snippet(trigger: "città", expansion: "Perché sì")]
+        let csv = LibraryTransfer.csv(snippets: snippets, italian: true)
+        XCTAssertTrue(csv.hasPrefix("\u{FEFF}frase;testo\n"), "a byte-order mark, semicolons and Italian headers")
+        let back = try LibraryTransfer.snippets(from: Data(csv.utf8), isCSV: true)
+        XCTAssertEqual(back.map(\.trigger), ["la mia firma", "città"])
+        XCTAssertEqual(back.map(\.expansion), snippets.map(\.expansion))
+        let words = try LibraryTransfer.vocabulary(from: Data(LibraryTransfer.csv(vocabulary: [VocabularyEntry(word: "Tommaso", heardAs: "Tomaso")], italian: true).utf8), isCSV: true)
+        XCTAssertEqual(words.map(\.word), ["Tommaso"]); XCTAssertEqual(words.map(\.heardAs), ["Tomaso"])
     }
 
     func testItalianExcelSemicolonsAndHeaders() throws {

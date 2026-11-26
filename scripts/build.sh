@@ -51,6 +51,9 @@ if [ -d "$VERB_APP/Contents/Resources/MLXModels" ]; then chmod -R a+rX "$VERB_AP
 # The licenses are copied fresh, so a notice removed from the source leaves the app too.
 rm -rf "$VERB_APP/Contents/Resources/Licenses"
 if [ -d "$VERB_ROOT/Resources/Licenses" ]; then ditto "$VERB_ROOT/Resources/Licenses" "$VERB_APP/Contents/Resources/Licenses"; fi
-codesign --force --sign - --options runtime --entitlements "$VERB_ROOT/Resources/Verb.entitlements" "$VERB_APP"
+# VERB_SIGN_IDENTITY names a signing certificate in your keychain, such as a Developer ID. Signed
+# by the same certificate each time, the app keeps its Accessibility permission across builds; signed
+# ad hoc, the default, it can lose it.
+codesign --force --sign "${VERB_SIGN_IDENTITY:--}" --timestamp=none --options runtime --entitlements "$VERB_ROOT/Resources/Verb.entitlements" "$VERB_APP"
 codesign --verify --deep --strict "$VERB_APP"
 echo "Built $VERB_APP"

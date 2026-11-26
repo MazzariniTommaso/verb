@@ -74,6 +74,25 @@ final class VoiceTests: XCTestCase {
         XCTAssertEqual(VoiceCommands.decide("Ehi Verb stop.", after: .continuing(segment), recording: true), .none)
     }
 
+    func testOrdinaryGreetingsNeedAPauseAfterTheName() {
+        for text in ["Oh, verb tenses are hard.", "Hi, verb conjugation is next.", "El verbo ser es irregular.", "Oh verba volant", "Oh verb tenses"] {
+            for event in [VoiceActivity.Event.continuing(segment), .ended(segment)] {
+                XCTAssertEqual(VoiceCommands.decide(text, after: event, recording: false), .none, text)
+            }
+        }
+        XCTAssertEqual(VoiceCommands.decide("Hi Verb, take a note.", after: .ended(segment), recording: false), .wake(from: 100))
+        XCTAssertEqual(VoiceCommands.decide("Hi verb.", after: .ended(segment), recording: false), .wake(from: 900))
+    }
+
+    func testAWeakGreetingInsideASentenceDoesNotClose() {
+        for text in ["I need a verb, done.", "Use a verb, stop."] {
+            XCTAssertEqual(VoiceCommands.decide(text, after: .ended(segment), recording: true), .none, text)
+        }
+        let phrases = VoiceCommands.Phrases(name: "Marco")
+        XCTAssertEqual(VoiceCommands.decide("Ho parlato con Luca e Marco, basta.", after: .ended(segment), recording: true, using: phrases), .none)
+        XCTAssertEqual(VoiceCommands.decide("Ho parlato con Luca. E Marco, basta.", after: .ended(segment), recording: true, using: phrases), .finish)
+    }
+
     func testOrdinaryEndingsAreNotCommands() {
         // "i" and "e i" inside a sentence are words, and "verbi" the plural: a weak greeting counts only before the name itself.
         for text in ["Ho finito di ripassare i verbi, basta.", "Ripassa i nomi e i verbi, basta.", "Non ricordo i verbi, nulla.", "Studia i verbi, stop.", "Ho detto e verbo stop."] {
@@ -294,5 +313,43 @@ final class VoiceTests: XCTestCase {
         XCTAssertEqual(InsertionPolicy.verdict(hasElement: true, role: "AXTextArea", hasTextRange: false, bundleID: "com.apple.TextEdit", isVerb: false), .textField)
         XCTAssertEqual(InsertionPolicy.verdict(hasElement: true, role: "AXGroup", hasTextRange: true, bundleID: "com.google.Chrome", isVerb: false), .textField, "An editable web area")
         XCTAssertEqual(InsertionPolicy.verdict(hasElement: true, role: "AXWebArea", hasTextRange: false, bundleID: "notion.id", isVerb: false), .unknown)
+    }
+
+    func testAFieldIsTheSameOnlyInTheSameWindowWithTheSameTextBeforeTheCursor() {
+        XCTAssertTrue(FieldIdentity.same(element: true, title: "● main.swift — Verb", titleNow: "main.swift — Verb", before: "let a", beforeNow: "let a", terminal: false), "the edited dot comes and goes")
+        XCTAssertTrue(FieldIdentity.same(element: true, title: "(3) Slack | general", titleNow: "(4) Slack | general", before: nil, beforeNow: nil, terminal: false), "unread counts change")
+        XCTAssertFalse(FieldIdentity.same(element: true, title: "main.swift — Verb", titleNow: "AppModel.swift — Verb", before: "", beforeNow: "", terminal: false), "one editor field, another file")
+        XCTAssertFalse(FieldIdentity.same(element: true, title: "Marco", titleNow: "Marco", before: "Ciao Marco, ", beforeNow: "A domani", terminal: false), "one chat field, another conversation")
+        XCTAssertTrue(FieldIdentity.same(element: false, title: "Marco", titleNow: "Marco", before: "Ciao Marco, ", beforeNow: "Ciao Marco, ", terminal: false), "the field drawn again")
+        XCTAssertFalse(FieldIdentity.same(element: false, title: "Modulo", titleNow: "Modulo", before: "", beforeNow: "", terminal: false), "another empty field in the same window")
+        XCTAssertFalse(FieldIdentity.same(element: false, title: nil, titleNow: nil, before: "Ciao", beforeNow: "Ciao", terminal: false))
+        XCTAssertTrue(FieldIdentity.same(element: true, title: "✳ Fix tests", titleNow: "⠂ Claude Code", before: "> ", beforeNow: "> x", terminal: true), "terminals retitle themselves")
+        XCTAssertFalse(FieldIdentity.same(element: false, title: "zsh", titleNow: "zsh", before: "> ", beforeNow: "> ", terminal: true))
+    }
+
+    func testAWholeLineCopiedWithNothingSelectedIsNoSelection() {
+        XCTAssertTrue(CopiedText.isWholeLine(metadata: #"{"version":1,"isFromEmptySelection":true,"multicursorText":null,"mode":"swift"}"#))
+        XCTAssertFalse(CopiedText.isWholeLine(metadata: #"{"version":1,"isFromEmptySelection":false,"multicursorText":null,"mode":"swift"}"#))
+        XCTAssertFalse(CopiedText.isWholeLine(metadata: "not json"))
+        // Chromium's pickle: its size, a count, then names and values as UTF-16, each padded to four bytes.
+        func pickle(_ pairs: [(String, String)]) -> Data {
+            var payload = Data()
+            func number(_ value: Int) { withUnsafeBytes(of: UInt32(value).littleEndian) { payload.append(contentsOf: $0) } }
+            func text(_ value: String) {
+                let units = Array(value.utf16)
+                number(units.count)
+                for unit in units { withUnsafeBytes(of: unit.littleEndian) { payload.append(contentsOf: $0) } }
+                if (units.count * 2) % 4 != 0 { payload.append(contentsOf: [0, 0]) }
+            }
+            number(pairs.count)
+            for (name, value) in pairs { text(name); text(value) }
+            var data = Data(); withUnsafeBytes(of: UInt32(payload.count).littleEndian) { data.append(contentsOf: $0) }
+            return data + payload
+        }
+        let custom = CopiedText.chromiumCustomData(pickle([("text/x-other", "è"), ("vscode-editor-data", #"{"isFromEmptySelection":true}"#)]))
+        XCTAssertEqual(custom["text/x-other"], "è")
+        XCTAssertEqual(custom["vscode-editor-data"].map(CopiedText.isWholeLine), true)
+        XCTAssertEqual(CopiedText.chromiumCustomData(Data([1, 2, 3])), [:])
+        XCTAssertEqual(CopiedText.chromiumCustomData(pickle([("a", "b")]).prefix(12)), [:], "a record cut short gives nothing")
     }
 }

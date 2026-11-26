@@ -2,12 +2,12 @@ import AppKit
 import QuartzCore
 import SwiftUI
 
-/// Measures how often the overlay's ink is redrawn on this Mac's display, in the same kind of
-/// panel the overlay uses:
+/// Measures how often the overlay's voice dots are redrawn on this Mac's display, in the same
+/// kind of panel the overlay uses:
 ///
 ///     open -n -g release/Verb.app --args --measure-frames /path/to/result.txt
 ///
-/// A small stroke shows at the bottom of the screen for three seconds, fed with made-up levels
+/// The dots show at the bottom of the screen for three seconds, fed with made-up levels
 /// in 100 ms bursts, as the microphone delivers them. It never touches the microphone, the
 /// keyboard or Verb's data. The frame rates are written to the file, and Verb quits.
 @MainActor enum FrameProbe {
@@ -31,7 +31,7 @@ import SwiftUI
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 3) {
             feeder.invalidate()
-            let report = String(format: "display: %@, up to %d Hz\nink redraws per second: %.0f\npanel visible: %@\n",
+            let report = String(format: "display: %@, up to %d Hz\nvoice redraws per second: %.0f\npanel visible: %@\n",
                                 screen.localizedName, screen.maximumFramesPerSecond, counter.rate, panel.occlusionState.contains(.visible) ? "yes" : "no")
             try? report.write(to: output, atomically: true, encoding: .utf8)
             NSApp.terminate(nil)
@@ -54,8 +54,8 @@ private struct ProbeView: View {
     let counter: FrameCounter
     var body: some View {
         ZStack {
-            InkStroke(meter: meter).frame(width: 140, height: 24)
-            // The same schedule as the stroke's, counted.
+            VoiceDotsView(meter: meter, color: Palette.textPrimary)
+            // The same schedule as the dots', counted.
             TimelineView(.animation) { timeline in
                 let moment = timeline.date.timeIntervalSinceReferenceDate
                 Canvas { _, _ in _ = moment; counter.stamps.append(CACurrentMediaTime()) }

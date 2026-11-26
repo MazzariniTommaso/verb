@@ -36,8 +36,14 @@ final class InteractionTests: XCTestCase {
     }
 
     func testKeysForPressingNeedAKeyAndStayClearOfMacOSAndTransforms() {
-        XCTAssertNil(KeyBinding.shiftCommandC.problem(hold: false))
+        XCTAssertNil(KeyBinding.controlCommandC.problem(hold: false))
         XCTAssertNil(KeyBinding.controlCommandV.problem(hold: false))
+        XCTAssertEqual(KeyBinding(modifiers: [.control, .command], keyCode: 3, label: "⌃ ⌘ F").problem(hold: false), .reserved, "full screen, in every app")
+        XCTAssertEqual(KeyBinding.shiftCommandC.knownUsers, ["Chrome", "Finder", "TextEdit", "Xcode"])
+        XCTAssertEqual(KeyBinding.controlCommandC.knownUsers, [])
+        XCTAssertTrue(KeyBinding.controlOption.usesVoiceOverKeys)
+        XCTAssertTrue(KeyBinding.controlOptionN.usesVoiceOverKeys)
+        XCTAssertFalse(KeyBinding.controlCommandV.usesVoiceOverKeys)
         XCTAssertEqual(KeyBinding.controlOption.problem(hold: false), .needsKey, "copying happens once, so it needs a key")
         XCTAssertEqual(KeyBinding(modifiers: [.command], keyCode: 8, label: "⌘ C").problem(hold: false), .reserved)
         XCTAssertEqual(KeyBinding(modifiers: [.command], keyCode: 49, label: "⌘ Space").problem(hold: false), .reserved)
@@ -48,11 +54,11 @@ final class InteractionTests: XCTestCase {
     func testKeysChosenForOneCommandAreTakenFromTheOneThatHadThem() {
         var keys = KeyBindings(), transforms = Transform.defaults
         let polish = transforms[0].id, concise = transforms[1].id
-        // ⇧⌘C moves from copying to the first transform.
-        KeyBindings.assign(.shiftCommandC, to: .transform(polish), keys: &keys, transforms: &transforms)
+        // ⌃⌘C moves from copying to the first transform.
+        KeyBindings.assign(.controlCommandC, to: .transform(polish), keys: &keys, transforms: &transforms)
         XCTAssertNil(keys.copyLast)
-        XCTAssertEqual(transforms[0].keys, .shiftCommandC)
-        XCTAssertEqual(KeyBindings.owner(of: .shiftCommandC, keys: keys, transforms: transforms), .transform(polish))
+        XCTAssertEqual(transforms[0].keys, .controlCommandC)
+        XCTAssertEqual(KeyBindings.owner(of: .controlCommandC, keys: keys, transforms: transforms), .transform(polish))
         // ⌃⌥2 moves from the second transform to pasting.
         KeyBindings.assign(.transformDigit(1), to: .pasteLast, keys: &keys, transforms: &transforms)
         XCTAssertNil(transforms[1].keys)
@@ -109,10 +115,15 @@ final class InteractionTests: XCTestCase {
         XCTAssertEqual(settings.keyOptions, KeyBindings())
         XCTAssertEqual(settings.keyOptions.dictation, .fn)
         XCTAssertEqual(settings.keyOptions.voiceEdit, .controlOption)
-        XCTAssertEqual(settings.keyOptions.copyLast?.label, "⇧ ⌘ C")
+        XCTAssertEqual(settings.keyOptions.copyLast?.label, "⌃ ⌘ C")
         XCTAssertEqual(settings.language, .it)
         var chosen = settings; chosen.keyOptions.dictation = KeyBinding(modifiers: [], keyCode: 96, label: "F5")
         XCTAssertEqual(try JSONDecoder().decode(Settings.self, from: JSONEncoder().encode(chosen)).keyOptions.dictation?.label, "F5")
+        // The hands-free key has none until chosen, and keeps the one chosen.
+        XCTAssertNil(settings.keyOptions.handsFree)
+        chosen.keyOptions.handsFree = KeyBinding(modifiers: [], keyCode: 97, label: "F6")
+        XCTAssertEqual(try JSONDecoder().decode(Settings.self, from: JSONEncoder().encode(chosen)).keyOptions.handsFree?.label, "F6")
+        XCTAssertEqual(KeyBindings.owner(of: KeyBinding(modifiers: [], keyCode: 97, label: "F6"), keys: chosen.keyOptions, transforms: []), .handsFree)
     }
 
     func testSpeechChunksCoverAllSamplesAndChooseQuietBoundary() {

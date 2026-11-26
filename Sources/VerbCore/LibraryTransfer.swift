@@ -12,19 +12,25 @@ public enum LibraryTransfer {
 
     // MARK: Export
 
-    public static func csv(vocabulary: [VocabularyEntry]) -> String {
-        (["word,heard_as"] + vocabulary.map { row([$0.word, $0.heardAs]) }).joined(separator: "\n") + "\n"
+    /// `italian` writes what Excel in Italian opens in columns: semicolons, Italian headers and a
+    /// byte-order mark, so the accents read right. Import takes either.
+    public static func csv(vocabulary: [VocabularyEntry], italian: Bool = false) -> String {
+        sheet(header: italian ? ["parola", "sentita come"] : ["word", "heard_as"], rows: vocabulary.map { [$0.word, $0.heardAs] }, italian: italian)
     }
-    public static func csv(snippets: [Snippet]) -> String {
-        (["trigger,expansion"] + snippets.map { row([$0.trigger, $0.expansion]) }).joined(separator: "\n") + "\n"
+    public static func csv(snippets: [Snippet], italian: Bool = false) -> String {
+        sheet(header: italian ? ["frase", "testo"] : ["trigger", "expansion"], rows: snippets.map { [$0.trigger, $0.expansion] }, italian: italian)
+    }
+    private static func sheet(header: [String], rows: [[String]], italian: Bool) -> String {
+        let separator = italian ? ";" : ","
+        return (italian ? "\u{FEFF}" : "") + ([header] + rows).map { row($0, separator: separator) }.joined(separator: "\n") + "\n"
     }
     public static func json(vocabulary: [VocabularyEntry]) throws -> Data { try encoder.encode(["vocabulary": vocabulary]) }
     public static func json(snippets: [Snippet]) throws -> Data { try encoder.encode(["snippets": snippets]) }
     private static var encoder: JSONEncoder { let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]; return encoder }
-    private static func row(_ fields: [String]) -> String {
+    private static func row(_ fields: [String], separator: String) -> String {
         fields.map { field in
             field.contains(where: { $0 == "," || $0 == "\"" || $0 == "\n" || $0 == "\r" || $0 == ";" }) ? "\"" + field.replacingOccurrences(of: "\"", with: "\"\"") + "\"" : field
-        }.joined(separator: ",")
+        }.joined(separator: separator)
     }
 
     // MARK: Import
@@ -50,7 +56,7 @@ public enum LibraryTransfer {
     /// snippets are formatted text.
     public static func snippets(from data: Data, isCSV: Bool) throws -> [Snippet] {
         if isCSV {
-            return table(data, headers: ["trigger", "phrase", "frase", "quando dico", "when i say"]).compactMap { cells in
+            return table(data, headers: ["trigger", "phrase", "frase", "quando dico", "when i say", "frase pronta"]).compactMap { cells in
                 guard cells.count >= 2, !cells[0].trimmed.isEmpty, !cells[1].isEmpty else { return nil }
                 return Snippet(trigger: cells[0].trimmed, expansion: cells[1])
             }
